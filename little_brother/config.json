@@ -1,0 +1,9 @@
+{
+  "active_window_poll_ms": 500,
+  "browser_debug_port": 9222,
+  "folders_to_watch": [
+    "C:/Users/%%USERNAME%%/Desktop",
+    "C:/Users/%%USERNAME%%/Documents/11projects",
+    "C:/Users/%%USERNAME%%/Downloads"
+  ]
+}
