@@ -5,11 +5,11 @@ import threading
 import signal
 import sys
 
-from db.database import Database
-from monitors.active_window import ActiveWindowMonitor
-from monitors.mouse_clicks import MouseClickMonitor
-from monitors.browser_tabs import BrowserTabMonitor
-from monitors.filesystem import FileSystemMonitor
+from .db.database import Database
+from .monitors.active_window import ActiveWindowMonitor
+from .monitors.mouse_clicks import MouseClickMonitor
+from .monitors.browser_tabs import BrowserTabMonitor
+from .monitors.filesystem import FileSystemMonitor
 
 
 class LittleBrother:
@@ -113,10 +113,12 @@ def handle_exit(signum, frame):
 
 
 if __name__ == "__main__":
-    # Register signal handlers for clean shutdown
+    # When run directly (python main.py from inside little_brother/),
+    # use the __main__.py entry point instead:
+    #   python -m little_brother
+    print("Use: python -m little_brother")
+    print("  (run from the project root directory)")
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
-
-    # Create and run Little Brother
     lb = LittleBrother()
     lb.run()

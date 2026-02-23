@@ -21,7 +21,7 @@ def test_integration():
     print("[TEST] " + "=" * 60)
 
     # Import here to avoid signal handler registration issues
-    from main import LittleBrother
+    from .main import LittleBrother
 
     # Create LittleBrother instance
     lb = LittleBrother()
