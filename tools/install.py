@@ -1,5 +1,5 @@
 """
-Little Brother — one-shot setup script.
+Little Brother - one-shot setup script.
 
 Registers the watchdog with Task Scheduler (restarts on crash) and adds the
 tray companion to the Windows autostart registry key for the current user.
@@ -42,7 +42,7 @@ def _check_prereqs():
 
 
 # ---------------------------------------------------------------------------
-# Task Scheduler — watchdog
+# Task Scheduler - watchdog
 # ---------------------------------------------------------------------------
 
 def _build_task_xml() -> str:
@@ -85,7 +85,7 @@ def _build_task_xml() -> str:
 
 
 def _install_watchdog_task():
-    print("\n[1/3] Registering watchdog with Task Scheduler…")
+    print("\n[1/3] Registering watchdog with Task Scheduler...")
 
     xml_path = ROOT / "tools" / "_watchdog_task.xml"
     xml_path.write_text(_build_task_xml(), encoding="utf-16")
@@ -99,32 +99,32 @@ def _install_watchdog_task():
             capture_output=True, text=True,
         )
         if result.returncode == 0:
-            print(f"  ✓ Task '{WATCHDOG_TASK_NAME}' registered")
+            print(f"  OK Task '{WATCHDOG_TASK_NAME}' registered")
         else:
-            print(f"  ✗ schtasks failed: {result.stderr.strip()}")
+            print(f"  FAIL schtasks failed: {result.stderr.strip()}")
             print("  Tip: Run this script from an elevated (admin) prompt if Task Scheduler requires it.")
     finally:
         xml_path.unlink(missing_ok=True)
 
 
 def _start_watchdog_task():
-    print("\n[2/3] Starting watchdog task now…")
+    print("\n[2/3] Starting watchdog task now...")
     result = subprocess.run(
         ["schtasks", "/run", "/tn", WATCHDOG_TASK_NAME],
         capture_output=True, text=True,
     )
     if result.returncode == 0:
-        print(f"  ✓ Task started")
+        print(f"  OK Task started")
     else:
-        print(f"  ✗ Could not start task: {result.stderr.strip()}")
+        print(f"  FAIL Could not start task: {result.stderr.strip()}")
 
 
 # ---------------------------------------------------------------------------
-# Registry autostart — tray
+# Registry autostart - tray
 # ---------------------------------------------------------------------------
 
 def _install_tray_autostart():
-    print("\n[3/3] Adding tray to Windows autostart…")
+    print("\n[3/3] Adding tray to Windows autostart...")
     pythonw = str(PYTHONW)
     tray = str(ROOT / "tools" / "tray.py")
     value = f'"{pythonw}" "{tray}"'
@@ -132,9 +132,9 @@ def _install_tray_autostart():
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY,
                             access=winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, TRAY_AUTOSTART_NAME, 0, winreg.REG_SZ, value)
-        print(f"  ✓ '{TRAY_AUTOSTART_NAME}' added to HKCU\\…\\Run")
+        print(f"  OK '{TRAY_AUTOSTART_NAME}' added to HKCU\\...\\Run")
     except Exception as exc:
-        print(f"  ✗ Registry write failed: {exc}")
+        print(f"  FAIL Registry write failed: {exc}")
 
 
 def _start_tray_now():
@@ -144,7 +144,7 @@ def _start_tray_now():
         cwd=str(ROOT),
         creationflags=0x00000008,  # DETACHED_PROCESS
     )
-    print("  ✓ Tray started")
+    print("  OK Tray started")
 
 
 # ---------------------------------------------------------------------------
@@ -152,17 +152,17 @@ def _start_tray_now():
 # ---------------------------------------------------------------------------
 
 def uninstall():
-    print("Removing Little Brother autostart entries…")
+    print("Removing Little Brother autostart entries...")
     subprocess.run(["schtasks", "/delete", "/tn", WATCHDOG_TASK_NAME, "/f"],
                    capture_output=True)
-    print(f"  ✓ Task '{WATCHDOG_TASK_NAME}' removed (if it existed)")
+    print(f"  OK Task '{WATCHDOG_TASK_NAME}' removed (if it existed)")
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY,
                             access=winreg.KEY_SET_VALUE) as key:
             winreg.DeleteValue(key, TRAY_AUTOSTART_NAME)
-        print(f"  ✓ '{TRAY_AUTOSTART_NAME}' removed from autostart")
+        print(f"  OK '{TRAY_AUTOSTART_NAME}' removed from autostart")
     except FileNotFoundError:
-        print(f"  — '{TRAY_AUTOSTART_NAME}' was not registered")
+        print(f"  - '{TRAY_AUTOSTART_NAME}' was not registered")
     print("\nDone. Watchdog and tray will no longer start automatically.")
 
 
@@ -172,7 +172,7 @@ def uninstall():
 
 def install():
     print("=" * 60)
-    print("  Little Brother — Setup")
+    print("  Little Brother - Setup")
     print("=" * 60)
     print(f"  Project root : {ROOT}")
     print(f"  Python       : {PYTHONW}")
