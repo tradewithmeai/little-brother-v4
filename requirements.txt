@@ -16,3 +16,5 @@ urllib3==2.6.3
 watchdog==6.0.0
 websocket-client==1.9.0
 Werkzeug==3.1.6
+mcp==1.26.0
+psutil==7.2.2
