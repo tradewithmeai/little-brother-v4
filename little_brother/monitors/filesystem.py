@@ -7,12 +7,14 @@ _EXCLUDED_EXTENSIONS = {
     ".db", ".db-journal", ".db-wal", ".db-shm",
     ".log", ".tmp", ".temp", ".bak",
     ".pyc", ".pyo",
+    ".parquet", ".arrow", ".zst", ".gz", ".bz2",  # data pipeline output files
 }
 
 # Directory names that are never worth recording
 _EXCLUDED_DIR_NAMES = {
     "__pycache__", ".git", "node_modules", ".pytest_cache",
     "venv", ".venv", "env",
+    "target",  # Rust/Java build output
 }
 
 
@@ -25,8 +27,9 @@ class FileSystemMonitor:
         self._observer = None
         self._watch_paths = self._resolve_paths(config.get("folders_to_watch", []))
         # Always exclude the app's own directory to prevent feedback loops
+        # Normalize to lowercase for case-insensitive Windows comparison
         self._excluded_paths = {
-            str(Path(__file__).resolve().parent.parent.parent)  # project root
+            str(Path(__file__).resolve().parent.parent.parent).lower()  # project root
         }
 
     @property
@@ -111,8 +114,9 @@ class FileSystemMonitor:
         if any(part in _EXCLUDED_DIR_NAMES for part in p.parts):
             return True
         # Ignore anything inside the app's own directory tree
+        # Normalize to lowercase for case-insensitive Windows path comparison
         try:
-            resolved = str(p.resolve())
+            resolved = str(p.resolve()).lower()
             for excl in self._excluded_paths:
                 if resolved.startswith(excl):
                     return True
