@@ -497,9 +497,28 @@ def run(config_path: str | None = None):
         log.info("auto_start_app=true — starting little-brother")
         supervisor.start()
 
+    # Background crash-recovery loop
+    restart_interval = int(wdog.get("restart_check_interval_seconds", 30))
+
+    def _recovery_loop():
+        log.info("Recovery loop started (check every %ss)", restart_interval)
+        while True:
+            time.sleep(restart_interval)
+            try:
+                s = supervisor.get_status()
+                if s.status == "failed":
+                    log.warning("little-brother is down — attempting restart")
+                    result = supervisor.start()
+                    log.info("Recovery restart result: %s (%s)", result.status, result.message)
+            except Exception as exc:
+                log.error("Recovery loop error: %s", exc)
+
+    t = threading.Thread(target=_recovery_loop, daemon=True, name="recovery")
+    t.start()
+
     flask_app = create_app(supervisor)
     log.info("Watchdog listening on port %s", port)
-    flask_app.run(host="0.0.0.0", port=port, threaded=True)
+    flask_app.run(host="127.0.0.1", port=port, threaded=True)
 
 
 if __name__ == "__main__":

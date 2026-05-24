@@ -12,7 +12,7 @@
   "watchdog": {
     "port": 5001,
     "app_port": 5000,
-    "app_start_command": ["venv/Scripts/python.exe", "-m", "little_brother"],
+    "app_start_command": ["venv/Scripts/pythonw.exe", "-m", "little_brother"],
     "start_timeout_seconds": 15,
     "stop_timeout_seconds": 10,
     "restart_timeout_seconds": 30,
