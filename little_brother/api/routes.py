@@ -62,6 +62,7 @@ def create_api_blueprint(orchestrator, event_bus):
     # ------------------------------------------------------------------
 
     @api.route("/api/v1/events")
+    @require_api_key
     def api_events():
         hours = float(request.args.get("hours", 24))
         limit = int(request.args.get("limit", 100))
@@ -94,6 +95,11 @@ def create_api_blueprint(orchestrator, event_bus):
                     "file_events",
                     "timestamp, 'file_event' as event_type, '' as window_title, '' as process_name, '' as url, src_path, '' as button",
                     "src_path LIKE ?",
+                ),
+                "key_events": (
+                    "key_events",
+                    "timestamp, 'key_events' as event_type, window_title, process_name, '' as url, text_chunk as src_path, '' as button",
+                    "window_title LIKE ? OR process_name LIKE ?",
                 ),
             }
 
@@ -136,6 +142,7 @@ def create_api_blueprint(orchestrator, event_bus):
     # ------------------------------------------------------------------
 
     @api.route("/api/v1/context")
+    @require_api_key
     def api_context():
         ts_param = request.args.get("ts", "").strip()
         window = int(request.args.get("window", 3))
@@ -240,6 +247,7 @@ def create_api_blueprint(orchestrator, event_bus):
     # ------------------------------------------------------------------
 
     @api.route("/api/v1/events/stream")
+    @require_api_key
     def api_event_stream():
         def generate():
             q = queue.Queue()
@@ -381,6 +389,162 @@ def create_api_blueprint(orchestrator, event_bus):
         removed = webhooks.pop(hook_id)
         orchestrator.update_config({"webhooks": webhooks})
         return jsonify({"status": "removed", "url": removed})
+
+    # ------------------------------------------------------------------
+    # Keystrokes
+    # ------------------------------------------------------------------
+
+    @api.route("/api/v1/keystrokes")
+    @require_api_key
+    def api_keystrokes():
+        hours = float(request.args.get("hours", 24))
+        since = hours_ago(hours)
+        conn = get_db()
+        try:
+            stats = conn.execute("""
+                SELECT COUNT(*) as chunks, SUM(key_count) as total_keys,
+                       SUM(CASE WHEN suppressed=1 THEN 1 ELSE 0 END) as suppressed_chunks
+                FROM key_events WHERE timestamp >= ?
+            """, (since,)).fetchone()
+
+            by_window = conn.execute("""
+                SELECT window_title, process_name,
+                       COUNT(*) as chunks, SUM(key_count) as keys
+                FROM key_events
+                WHERE timestamp >= ? AND suppressed = 0 AND window_title != ''
+                GROUP BY window_title, process_name
+                ORDER BY keys DESC
+                LIMIT 15
+            """, (since,)).fetchall()
+
+            recent = conn.execute("""
+                SELECT timestamp, window_title, process_name,
+                       text_chunk, key_count, suppressed
+                FROM key_events
+                WHERE timestamp >= ?
+                ORDER BY id DESC
+                LIMIT 40
+            """, (since,)).fetchall()
+
+            by_hour = conn.execute("""
+                SELECT SUBSTR(timestamp, 1, 13) as hour, SUM(key_count) as keys
+                FROM key_events WHERE timestamp >= ?
+                GROUP BY hour ORDER BY hour
+            """, (since,)).fetchall()
+
+            return jsonify({
+                "stats": dict(stats),
+                "by_window": [dict(r) for r in by_window],
+                "recent": [dict(r) for r in recent],
+                "by_hour": [{"hour": r["hour"], "keys": r["keys"]} for r in by_hour],
+            })
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Digest — single-call activity snapshot for agent consumption
+    # ------------------------------------------------------------------
+
+    @api.route("/api/v1/digest")
+    @require_api_key
+    def api_digest():
+        hours = float(request.args.get("hours", 24))
+        since = hours_ago(hours)
+        conn = get_db()
+        try:
+            # Summary counts
+            counts = {}
+            for key, table, col in [
+                ("window_switches", "active_window_events", "COUNT(*)"),
+                ("mouse_clicks",    "mouse_click_events",   "COUNT(*)"),
+                ("file_events",     "file_events",          "COUNT(*)"),
+                ("browser_tab_events", "browser_tab_events", "COUNT(*)"),
+                ("keystroke_chunks", "key_events",          "COUNT(*)"),
+                ("keystrokes",       "key_events",          "SUM(key_count)"),
+            ]:
+                row = conn.execute(
+                    f"SELECT {col} as v FROM {table} WHERE timestamp >= ?", (since,)
+                ).fetchone()
+                counts[key] = row["v"] or 0
+
+            # Top applications
+            top_apps = conn.execute("""
+                SELECT process_name, COUNT(*) as switches
+                FROM active_window_events
+                WHERE timestamp >= ? AND process_name != ''
+                GROUP BY process_name ORDER BY switches DESC LIMIT 10
+            """, (since,)).fetchall()
+
+            # Keystroke contexts (top windows by keys typed)
+            ks_contexts = conn.execute("""
+                SELECT window_title, process_name, SUM(key_count) as keys
+                FROM key_events
+                WHERE timestamp >= ? AND suppressed = 0 AND window_title != ''
+                GROUP BY window_title, process_name
+                ORDER BY keys DESC LIMIT 10
+            """, (since,)).fetchall()
+
+            # Browser activity from active window events (all browsers)
+            browser_activity = conn.execute("""
+                SELECT window_title, process_name, COUNT(*) as focus_count
+                FROM active_window_events
+                WHERE timestamp >= ?
+                  AND (process_name LIKE '%firefox%' OR process_name LIKE '%chrome%'
+                       OR process_name LIKE '%msedge%')
+                  AND window_title != ''
+                GROUP BY window_title, process_name
+                ORDER BY focus_count DESC LIMIT 15
+            """, (since,)).fetchall()
+
+            # Top directories
+            raw_paths = conn.execute("""
+                SELECT src_path, COUNT(*) as cnt FROM file_events
+                WHERE timestamp >= ? GROUP BY src_path ORDER BY cnt DESC
+            """, (since,)).fetchall()
+            dir_counts = {}
+            for r in raw_paths:
+                path = r["src_path"].replace("\\", "/")
+                parent = "/".join(path.split("/")[:-1]) if "/" in path else path
+                dir_counts[parent] = dir_counts.get(parent, 0) + r["cnt"]
+            top_dirs = sorted(dir_counts.items(), key=lambda x: -x[1])[:10]
+
+            # Hourly timeline (bucketed by hour)
+            def hourly(table, value_col="COUNT(*)"):
+                rows = conn.execute(f"""
+                    SELECT SUBSTR(timestamp, 1, 13) as hour, {value_col} as v
+                    FROM {table} WHERE timestamp >= ?
+                    GROUP BY hour ORDER BY hour
+                """, (since,)).fetchall()
+                return [{"hour": r["hour"], "count": r["v"]} for r in rows]
+
+            return jsonify({
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "period_hours": hours,
+                "summary": counts,
+                "top_applications": [
+                    {"process": r["process_name"], "switches": r["switches"]}
+                    for r in top_apps
+                ],
+                "keystroke_contexts": [
+                    {"window": r["window_title"], "process": r["process_name"], "keys": r["keys"]}
+                    for r in ks_contexts
+                ],
+                "browser_activity": [
+                    {"title": r["window_title"], "process": r["process_name"], "focus_count": r["focus_count"]}
+                    for r in browser_activity
+                ],
+                "top_directories": [
+                    {"path": d[0], "count": d[1]} for d in top_dirs
+                ],
+                "timeline_hourly": {
+                    "windows": hourly("active_window_events"),
+                    "clicks":  hourly("mouse_click_events"),
+                    "files":   hourly("file_events"),
+                    "keys":    hourly("key_events", "SUM(key_count)"),
+                },
+            })
+        finally:
+            conn.close()
 
     return api
 
