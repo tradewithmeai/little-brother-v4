@@ -10,6 +10,10 @@ class MouseClickMonitor:
         self.db = db
         self._listener = None
 
+    @property
+    def is_running(self):
+        return self._listener is not None and self._listener.is_alive()
+
     def start(self):
         try:
             from pynput.mouse import Listener

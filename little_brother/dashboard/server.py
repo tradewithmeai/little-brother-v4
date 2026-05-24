@@ -39,7 +39,7 @@ def api_summary():
     conn = get_db()
     try:
         result = {}
-        for table in ["active_window_events", "mouse_click_events", "browser_tab_events", "file_events"]:
+        for table in ["active_window_events", "mouse_click_events", "browser_tab_events", "file_events", "key_events"]:
             row = conn.execute(
                 f"SELECT COUNT(*) as cnt, MIN(timestamp) as first_ts, MAX(timestamp) as last_ts FROM {table}"
             ).fetchone()
@@ -48,6 +48,10 @@ def api_summary():
                 "first": row["first_ts"],
                 "last": row["last_ts"],
             }
+
+        # Extra keystroke stat: total key count
+        ks = conn.execute("SELECT SUM(key_count) as total FROM key_events").fetchone()
+        result["key_events"]["total_keys"] = ks["total"] or 0
 
         db_path = os.path.abspath(DB_PATH)
         result["db_size_kb"] = round(os.path.getsize(db_path) / 1024, 1) if os.path.exists(db_path) else 0
@@ -208,7 +212,8 @@ def api_browser_tabs():
             ORDER BY cnt DESC
         """, (since,)).fetchall()
 
-        recent = conn.execute("""
+        # Chrome CDP tab events
+        cdp_recent = conn.execute("""
             SELECT timestamp, browser, event_type, title, url
             FROM browser_tab_events
             WHERE timestamp >= ?
@@ -216,9 +221,37 @@ def api_browser_tabs():
             LIMIT 30
         """, (since,)).fetchall()
 
+        # Firefox and Chrome activity via active window titles
+        # Window title format: "Page Title — Mozilla Firefox" or "Page Title - Google Chrome"
+        browser_windows = conn.execute("""
+            SELECT timestamp, process_name, window_title
+            FROM active_window_events
+            WHERE timestamp >= ?
+              AND (process_name LIKE '%firefox%' OR process_name LIKE '%chrome%'
+                   OR process_name LIKE '%msedge%' OR process_name LIKE '%opera%')
+              AND window_title != ''
+            ORDER BY id DESC
+            LIMIT 60
+        """, (since,)).fetchall()
+
+        # Top pages by time in focus (deduplicated by title)
+        top_pages = conn.execute("""
+            SELECT window_title, process_name, COUNT(*) as focus_count
+            FROM active_window_events
+            WHERE timestamp >= ?
+              AND (process_name LIKE '%firefox%' OR process_name LIKE '%chrome%'
+                   OR process_name LIKE '%msedge%' OR process_name LIKE '%opera%')
+              AND window_title != ''
+            GROUP BY window_title, process_name
+            ORDER BY focus_count DESC
+            LIMIT 20
+        """, (since,)).fetchall()
+
         return jsonify({
             "by_type": [dict(r) for r in by_type],
-            "recent": [dict(r) for r in recent],
+            "cdp_recent": [dict(r) for r in cdp_recent],
+            "browser_windows": [dict(r) for r in browser_windows],
+            "top_pages": [dict(r) for r in top_pages],
         })
     finally:
         conn.close()
@@ -236,6 +269,7 @@ def api_timeline():
             "clicks": "mouse_click_events",
             "tabs": "browser_tab_events",
             "files": "file_events",
+            "keys": "key_events",
         }
         result = {}
         for key, table in tables.items():
@@ -253,18 +287,73 @@ def api_timeline():
         conn.close()
 
 
+@app.route("/api/keystrokes")
+def api_keystrokes():
+    hours = float(request.args.get("hours", 24))
+    since = hours_ago(hours)
+    conn = get_db()
+    try:
+        stats = conn.execute("""
+            SELECT COUNT(*) as chunks, SUM(key_count) as total_keys,
+                   SUM(CASE WHEN suppressed=1 THEN 1 ELSE 0 END) as suppressed_chunks
+            FROM key_events WHERE timestamp >= ?
+        """, (since,)).fetchone()
+
+        by_window = conn.execute("""
+            SELECT window_title, process_name,
+                   COUNT(*) as chunks, SUM(key_count) as keys
+            FROM key_events
+            WHERE timestamp >= ? AND suppressed = 0 AND window_title != ''
+            GROUP BY window_title, process_name
+            ORDER BY keys DESC
+            LIMIT 15
+        """, (since,)).fetchall()
+
+        recent = conn.execute("""
+            SELECT timestamp, window_title, process_name, text_chunk, key_count, suppressed
+            FROM key_events
+            WHERE timestamp >= ?
+            ORDER BY id DESC
+            LIMIT 40
+        """, (since,)).fetchall()
+
+        by_hour = conn.execute("""
+            SELECT SUBSTR(timestamp, 1, 13) as hour, SUM(key_count) as keys
+            FROM key_events WHERE timestamp >= ?
+            GROUP BY hour ORDER BY hour
+        """, (since,)).fetchall()
+
+        return jsonify({
+            "stats": dict(stats),
+            "by_window": [dict(r) for r in by_window],
+            "recent": [dict(r) for r in recent],
+            "by_hour": [{"hour": r["hour"], "keys": r["keys"]} for r in by_hour],
+        })
+    finally:
+        conn.close()
+
+
 # --- Server wrapper ---
 
 class DashboardServer:
     """Flask dashboard server that runs in a background thread."""
 
-    def __init__(self, config):
+    def __init__(self, config, orchestrator=None, event_bus=None):
         self.port = config.get("dashboard_port", 5000)
         self._server = None
         self._thread = None
 
+        # Register API blueprint if orchestrator is available
+        if orchestrator and event_bus:
+            from ..api.routes import create_api_blueprint
+            api_bp = create_api_blueprint(orchestrator, event_bus)
+            app.register_blueprint(api_bp)
+
+        # Set API key in app config
+        app.config["LB_API_KEY"] = config.get("api_key", "")
+
     def start(self):
-        self._server = make_server("0.0.0.0", self.port, app)
+        self._server = make_server("127.0.0.1", self.port, app)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         print(f"[Dashboard] Running at http://localhost:{self.port}")

@@ -1,5 +1,7 @@
 import os
 import datetime
+import time
+from collections import deque
 from pathlib import Path
 
 # File extensions that are never worth recording
@@ -17,6 +19,56 @@ _EXCLUDED_DIR_NAMES = {
     "target",  # Rust/Java build output
 }
 
+# Path fragments (lowercase) that indicate AI agent / tool activity
+_AGENT_PATH_PATTERNS = {
+    "\\.claude\\",
+    "/.claude/",
+    "\\.playwright-mcp\\",
+    "/.playwright-mcp/",
+    "\\appdata\\local\\temp\\claude",
+    "/appdata/local/temp/claude",
+}
+
+# Velocity threshold: events per directory within the window
+_VELOCITY_WINDOW_SECS = 5
+_VELOCITY_THRESHOLD = 20
+
+
+class ActivityTagger:
+    """Tags filesystem events as 'human' or 'agent_activity'."""
+
+    def __init__(self):
+        self._dir_times: dict[str, deque] = {}
+        self._cleanup_counter = 0
+
+    def tag(self, path: str) -> str:
+        path_lower = path.lower().replace("/", "\\")
+
+        for pattern in _AGENT_PATH_PATTERNS:
+            if pattern.replace("/", "\\") in path_lower:
+                return "agent_activity"
+
+        parent = str(Path(path).parent).lower()
+        now = time.monotonic()
+        times = self._dir_times.setdefault(parent, deque())
+
+        cutoff = now - _VELOCITY_WINDOW_SECS
+        while times and times[0] < cutoff:
+            times.popleft()
+
+        times.append(now)
+
+        if len(times) >= _VELOCITY_THRESHOLD:
+            return "agent_activity"
+
+        # Periodically drop empty deques to prevent unbounded growth
+        self._cleanup_counter += 1
+        if self._cleanup_counter >= 1000:
+            self._cleanup_counter = 0
+            self._dir_times = {k: v for k, v in self._dir_times.items() if v}
+
+        return "human"
+
 
 class FileSystemMonitor:
     """Monitor filesystem changes using watchdog."""
@@ -26,6 +78,7 @@ class FileSystemMonitor:
         self.config = config
         self._observer = None
         self._watch_paths = self._resolve_paths(config.get("folders_to_watch", []))
+        self._tagger = ActivityTagger()
         # Always exclude the app's own directory to prevent feedback loops
         # Normalize to lowercase for case-insensitive Windows comparison
         self._excluded_paths = {
@@ -129,11 +182,13 @@ class FileSystemMonitor:
             return
         try:
             timestamp = datetime.datetime.utcnow().isoformat()
+            source_tag = self._tagger.tag(event.src_path)
             self.db.log_file_event(
                 timestamp=timestamp,
                 event_type=event_type,
                 src_path=event.src_path,
                 is_directory=1 if event.is_directory else 0,
+                source_tag=source_tag,
             )
         except Exception as e:
             print(f"[Filesystem] Error logging event: {e}")

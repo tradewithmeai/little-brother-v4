@@ -30,5 +30,16 @@ CREATE TABLE IF NOT EXISTS file_events (
     timestamp TEXT NOT NULL,
     event_type TEXT,
     src_path TEXT,
-    is_directory INTEGER
+    is_directory INTEGER,
+    source_tag TEXT DEFAULT 'human'
+);
+
+CREATE TABLE IF NOT EXISTS key_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    window_title TEXT,
+    process_name TEXT,
+    text_chunk TEXT,
+    key_count INTEGER,
+    suppressed INTEGER DEFAULT 0
 );

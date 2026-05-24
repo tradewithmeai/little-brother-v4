@@ -41,6 +41,10 @@ class ActiveWindowMonitor:
         self._last_hwnd = None
         self._last_title = None
 
+    @property
+    def is_running(self):
+        return self._thread is not None and self._thread.is_alive()
+
     def start(self):
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)

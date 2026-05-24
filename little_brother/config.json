@@ -1,5 +1,5 @@
 {
-  "active_window_poll_ms": 500,
+  "active_window_poll_ms": 1000,
   "browser_debug_port": 9222,
   "dashboard_port": 5000,
   "folders_to_watch": [
@@ -16,10 +16,10 @@
     "start_timeout_seconds": 15,
     "stop_timeout_seconds": 10,
     "restart_timeout_seconds": 30,
-    "auto_start_app": false
+    "auto_start_app": true
   },
   "betty": {
-    "enabled": true,
+    "enabled": false,
     "url": "http://localhost:8400",
     "agent_id": "lb-desktop",
     "secret_hex": "73c6b625ac012646e3f23ad505c340c116701502ab2f763a484d29ec3ca936bc"

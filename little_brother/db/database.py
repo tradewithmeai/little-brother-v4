@@ -34,6 +34,8 @@ class Database:
         # Create database connection
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
 
         # Load schema
         self.load_schema()
@@ -49,8 +51,39 @@ class Database:
 
         cursor = self.conn.cursor()
         cursor.executescript(schema_sql)
+        self._migrate(cursor)
         self.conn.commit()
         print(f"Schema loaded from {schema_path}")
+
+    def _migrate(self, cursor):
+        """Apply additive migrations for existing databases."""
+        existing_file = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(file_events)").fetchall()
+        }
+        if "source_tag" not in existing_file:
+            cursor.execute(
+                "ALTER TABLE file_events ADD COLUMN source_tag TEXT DEFAULT 'human'"
+            )
+            print("[DB] Migrated: added source_tag column to file_events")
+
+        tables = {
+            row[0]
+            for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "key_events" not in tables:
+            cursor.execute("""
+                CREATE TABLE key_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    window_title TEXT,
+                    process_name TEXT,
+                    text_chunk TEXT,
+                    key_count INTEGER,
+                    suppressed INTEGER DEFAULT 0
+                )
+            """)
+            print("[DB] Migrated: created key_events table")
 
     def write_event(self, table, data_dict):
         """Queue an event to be written to the database.
@@ -86,31 +119,34 @@ class Database:
         """Main loop for writer thread - processes queued events."""
         while self.running:
             try:
-                # Get event from queue with timeout to allow checking self.running
+                # Block until at least one event arrives
                 try:
-                    table, data_dict = self.event_queue.get(timeout=0.1)
+                    first = self.event_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
 
-                # Build INSERT statement
-                columns = ", ".join(data_dict.keys())
-                placeholders = ", ".join(["?" for _ in data_dict])
-                sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+                # Drain up to 49 more events that are already queued
+                batch = [first]
+                try:
+                    while len(batch) < 50:
+                        batch.append(self.event_queue.get_nowait())
+                except queue.Empty:
+                    pass
 
-                # Execute and commit
+                # Execute all inserts and commit once
                 cursor = self.conn.cursor()
-                cursor.execute(sql, list(data_dict.values()))
+                for table, data_dict in batch:
+                    columns = ", ".join(data_dict.keys())
+                    placeholders = ", ".join(["?" for _ in data_dict])
+                    sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+                    cursor.execute(sql, list(data_dict.values()))
                 self.conn.commit()
 
-                # Mark task as done
-                self.event_queue.task_done()
-
-                # Sleep to reduce CPU load
-                time.sleep(0.01)
+                for _ in batch:
+                    self.event_queue.task_done()
 
             except Exception as e:
                 print(f"Error in writer loop: {e}")
-                time.sleep(0.01)
 
     def stop(self):
         """Gracefully shut down the database writer."""
@@ -187,7 +223,17 @@ class Database:
             "url": url
         })
 
-    def log_file_event(self, timestamp, event_type, src_path, is_directory):
+    def log_key_event(self, timestamp, window_title, process_name, text_chunk, key_count, suppressed=0):
+        self.write_event("key_events", {
+            "timestamp": timestamp,
+            "window_title": window_title,
+            "process_name": process_name,
+            "text_chunk": text_chunk,
+            "key_count": key_count,
+            "suppressed": suppressed,
+        })
+
+    def log_file_event(self, timestamp, event_type, src_path, is_directory, source_tag="human"):
         """Log a filesystem event.
 
         Args:
@@ -195,12 +241,14 @@ class Database:
             event_type: Type of event ('created', 'modified', 'deleted', 'moved')
             src_path: Path to the file or directory
             is_directory: 1 if directory, 0 if file
+            source_tag: 'human' or 'agent_activity'
         """
         self.write_event("file_events", {
             "timestamp": timestamp,
             "event_type": event_type,
             "src_path": src_path,
-            "is_directory": is_directory
+            "is_directory": is_directory,
+            "source_tag": source_tag,
         })
 
 

@@ -1,10 +1,16 @@
 import threading
 import datetime
 import json
+import urllib.request
+import urllib.error
 
 
 class BrowserTabMonitor:
-    """Monitor browser tabs via Chrome DevTools Protocol."""
+    """Monitor browser tabs via Chrome DevTools Protocol HTTP endpoint.
+
+    Firefox is not supported via this method — use active_window_events
+    for browser activity when running Firefox.
+    """
 
     def __init__(self, db, config):
         self.db = db
@@ -15,6 +21,10 @@ class BrowserTabMonitor:
         self._last_tabs = {}  # id -> {title, url}
         self._poll_interval = 2.0
         self._connected = False
+
+    @property
+    def is_running(self):
+        return self._thread is not None and self._thread.is_alive()
 
     def start(self):
         self._stop_event.clear()
@@ -39,26 +49,21 @@ class BrowserTabMonitor:
         print("[BrowserTabs] Monitor stopped")
 
     def _poll(self):
-        """Poll Chrome DevTools Protocol for open tabs."""
-        import urllib.request
-        import urllib.error
-
+        """Poll Chrome DevTools Protocol HTTP endpoint for open tabs."""
         url = f"http://localhost:{self.debug_port}/json"
         try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=2) as resp:
+            with urllib.request.urlopen(url, timeout=2) as resp:
                 data = json.loads(resp.read().decode())
         except (urllib.error.URLError, ConnectionRefusedError, OSError):
             if self._connected:
-                print("[BrowserTabs] Chrome debug port not available")
+                print("[BrowserTabs] Debug port not available")
                 self._connected = False
             return
 
         if not self._connected:
-            print("[BrowserTabs] Connected to Chrome DevTools")
+            print("[BrowserTabs] Connected to browser DevTools")
             self._connected = True
 
-        # Build current tab snapshot (only page targets)
         current_tabs = {}
         for entry in data:
             if entry.get("type") != "page":
@@ -71,39 +76,27 @@ class BrowserTabMonitor:
 
         timestamp = datetime.datetime.utcnow().isoformat()
 
-        # Detect new tabs
         for tab_id, info in current_tabs.items():
             if tab_id not in self._last_tabs:
                 self.db.log_browser_tab(
-                    timestamp=timestamp,
-                    browser="chrome",
-                    event_type="created",
-                    title=info["title"],
-                    url=info["url"],
+                    timestamp=timestamp, browser="chrome",
+                    event_type="created", title=info["title"], url=info["url"],
                 )
 
-        # Detect removed tabs
         for tab_id, info in self._last_tabs.items():
             if tab_id not in current_tabs:
                 self.db.log_browser_tab(
-                    timestamp=timestamp,
-                    browser="chrome",
-                    event_type="removed",
-                    title=info["title"],
-                    url=info["url"],
+                    timestamp=timestamp, browser="chrome",
+                    event_type="removed", title=info["title"], url=info["url"],
                 )
 
-        # Detect updated tabs (title or URL changed)
         for tab_id, info in current_tabs.items():
             if tab_id in self._last_tabs:
                 old = self._last_tabs[tab_id]
                 if info["title"] != old["title"] or info["url"] != old["url"]:
                     self.db.log_browser_tab(
-                        timestamp=timestamp,
-                        browser="chrome",
-                        event_type="updated",
-                        title=info["title"],
-                        url=info["url"],
+                        timestamp=timestamp, browser="chrome",
+                        event_type="updated", title=info["title"], url=info["url"],
                     )
 
         self._last_tabs = current_tabs
