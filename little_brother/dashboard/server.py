@@ -140,43 +140,22 @@ def api_file_events():
     since = hours_ago(hours)
     conn = get_db()
     try:
+        noise_filter = "src_path NOT LIKE '%betty_seq.json%' AND src_path NOT LIKE '%health.json%'"
+
         # Events by type
-        by_type = conn.execute("""
+        by_type = conn.execute(f"""
             SELECT event_type, COUNT(*) as cnt
             FROM file_events
-            WHERE timestamp >= ?
+            WHERE timestamp >= ? AND {noise_filter}
             GROUP BY event_type
             ORDER BY cnt DESC
         """, (since,)).fetchall()
 
-        # Top directories (extract parent directory from src_path)
-        top_dirs = conn.execute("""
-            SELECT
-                CASE
-                    WHEN INSTR(REPLACE(src_path, '\\', '/'), '/') > 0
-                    THEN SUBSTR(REPLACE(src_path, '\\', '/'), 1,
-                         LENGTH(REPLACE(src_path, '\\', '/'))
-                         - LENGTH(REPLACE(REPLACE(src_path, '\\', '/'),
-                           SUBSTR(REPLACE(src_path, '\\', '/'),
-                             INSTR(REPLACE(
-                               REPLACE(REPLACE(src_path, '\\', '/'), '/', CHAR(0)),
-                               CHAR(0), '/'
-                             ), '/') + 0), '')))
-                    ELSE src_path
-                END as dir_path,
-                COUNT(*) as cnt
-            FROM file_events
-            WHERE timestamp >= ?
-            GROUP BY dir_path
-            ORDER BY cnt DESC
-            LIMIT 15
-        """, (since,)).fetchall()
-
         # Simpler approach - just get raw paths and group in Python
-        raw = conn.execute("""
+        raw = conn.execute(f"""
             SELECT src_path, COUNT(*) as cnt
             FROM file_events
-            WHERE timestamp >= ?
+            WHERE timestamp >= ? AND {noise_filter}
             GROUP BY src_path
             ORDER BY cnt DESC
         """, (since,)).fetchall()
@@ -265,21 +244,23 @@ def api_timeline():
     try:
         # Bucket events by minute for each table
         tables = {
-            "windows": "active_window_events",
-            "clicks": "mouse_click_events",
-            "tabs": "browser_tab_events",
-            "files": "file_events",
-            "keys": "key_events",
+            "windows": ("active_window_events", "timestamp >= ?", (since,)),
+            "clicks":  ("mouse_click_events",   "timestamp >= ?", (since,)),
+            "tabs":    ("browser_tab_events",    "timestamp >= ?", (since,)),
+            "files":   ("file_events",
+                        "timestamp >= ? AND src_path NOT LIKE '%betty_seq.json%' AND src_path NOT LIKE '%health.json%'",
+                        (since,)),
+            "keys":    ("key_events",            "timestamp >= ?", (since,)),
         }
         result = {}
-        for key, table in tables.items():
+        for key, (table, where, params) in tables.items():
             rows = conn.execute(f"""
                 SELECT SUBSTR(timestamp, 1, 16) as minute, COUNT(*) as cnt
                 FROM {table}
-                WHERE timestamp >= ?
+                WHERE {where}
                 GROUP BY minute
                 ORDER BY minute
-            """, (since,)).fetchall()
+            """, params).fetchall()
             result[key] = [{"minute": r["minute"], "count": r["cnt"]} for r in rows]
 
         return jsonify(result)

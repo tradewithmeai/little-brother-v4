@@ -256,6 +256,7 @@ def run(date=None):
     top_files = cur.execute(
         "SELECT src_path, COUNT(*) as n FROM file_events "
         "WHERE timestamp >= ? AND timestamp <= ? AND source_tag='human' AND is_directory=0 "
+        "  AND src_path NOT LIKE '%betty_seq.json%' AND src_path NOT LIKE '%health.json%' "
         "GROUP BY src_path ORDER BY n DESC LIMIT 15",
         (session_start, session_end)
     ).fetchall()

@@ -549,8 +549,9 @@ function mkChart(id, type, data, opts = {}) {
 }
 
 const scaleOpts = {
-  x: { ticks: { color: C.tickColor, font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: C.gridLine } },
-  y: { ticks: { color: C.tickColor, font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: C.gridLine } },
+  x:  { ticks: { color: C.tickColor, font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: C.gridLine } },
+  y:  { position: 'left',  ticks: { color: C.tickColor, font: { family: "'JetBrains Mono'", size: 10 } }, grid: { color: C.gridLine } },
+  y2: { position: 'right', ticks: { color: C.amber,     font: { family: "'JetBrains Mono'", size: 10 } }, grid: { drawOnChartArea: false }, title: { display: true, text: 'Files', color: C.amber, font: { family: "'JetBrains Mono'", size: 9 } } },
 };
 
 // ── Table builder ─────────────────────────────────────────────────────────────
@@ -647,11 +648,11 @@ async function refresh() {
     mkChart('timeline-chart', 'line', {
       labels,
       datasets: [
-        { label: 'File Events',     data: tlSeries('files'),   borderColor: C.amber,  backgroundColor: C.amber  + '18', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
-        { label: 'Window Switches', data: tlSeries('windows'), borderColor: C.blue,   backgroundColor: C.blue   + '18', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
-        { label: 'Mouse Clicks',    data: tlSeries('clicks'),  borderColor: C.red,    backgroundColor: C.red    + '18', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
-        { label: 'Browser Tabs',    data: tlSeries('tabs'),    borderColor: C.purple, backgroundColor: C.purple + '18', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 },
-        { label: 'Keystrokes',      data: tlSeries('keys'),    borderColor: C.green,  backgroundColor: C.green  + '12', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2 },
+        { label: 'File Events',     data: tlSeries('files'),   borderColor: C.amber,  backgroundColor: C.amber  + '10', fill: false, tension: 0.3, pointRadius: 0, borderWidth: 1, yAxisID: 'y2' },
+        { label: 'Window Switches', data: tlSeries('windows'), borderColor: C.blue,   backgroundColor: C.blue   + '18', fill: true,  tension: 0.3, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' },
+        { label: 'Mouse Clicks',    data: tlSeries('clicks'),  borderColor: C.red,    backgroundColor: C.red    + '18', fill: true,  tension: 0.3, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' },
+        { label: 'Browser Tabs',    data: tlSeries('tabs'),    borderColor: C.purple, backgroundColor: C.purple + '18', fill: true,  tension: 0.3, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y' },
+        { label: 'Keystrokes',      data: tlSeries('keys'),    borderColor: C.green,  backgroundColor: C.green  + '12', fill: true,  tension: 0.3, pointRadius: 0, borderWidth: 2,   yAxisID: 'y' },
       ],
     }, { scales: scaleOpts });
   } catch(e) { console.error('timeline', e); }
