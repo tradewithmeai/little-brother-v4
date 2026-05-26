@@ -546,54 +546,6 @@ def create_api_blueprint(orchestrator, event_bus):
         finally:
             conn.close()
 
-    # ------------------------------------------------------------------
-    # Social monitor bridge — serves handoff from local social-monitor
-    # ------------------------------------------------------------------
-
-    @api.route("/api/v1/social")
-    @require_api_key
-    def api_social():
-        import json as _json
-        from pathlib import Path
-
-        handoff_json = Path(
-            r"D:\Documents\11Projects\mygov-hackathon\social-monitor\handoffs\social_to_hermes.json"
-        )
-        handoff_md = Path(
-            r"D:\Documents\11Projects\mygov-hackathon\social-monitor\handoffs\social_to_hermes.md"
-        )
-
-        if not handoff_json.exists():
-            return jsonify({
-                "status": "no_data",
-                "message": "Handoff file not found — social monitor may not have run yet.",
-                "staleness_hours": None,
-            })
-
-        try:
-            data = _json.loads(handoff_json.read_text(encoding="utf-8"))
-            generated_at = data.get("generated_at", "")
-            staleness_hours = None
-            if generated_at:
-                try:
-                    gen_dt = datetime.fromisoformat(generated_at)
-                    staleness_hours = round(
-                        (datetime.utcnow() - gen_dt).total_seconds() / 3600, 1
-                    )
-                except Exception:
-                    pass
-
-            brief_md = handoff_md.read_text(encoding="utf-8") if handoff_md.exists() else None
-
-            return jsonify({
-                "status": "ok",
-                "staleness_hours": staleness_hours,
-                "data": data,
-                "brief_md": brief_md,
-            })
-        except Exception as e:
-            return jsonify({"status": "error", "error": str(e)}), 500
-
     return api
 
 
