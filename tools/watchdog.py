@@ -95,6 +95,7 @@ class ProcessSupervisor:
     # ------------------------------------------------------------------
 
     def _discover_existing_process(self):
+        # Try psutil port scan first (may fail without admin on Windows)
         try:
             for conn in psutil.net_connections(kind="tcp"):
                 if (conn.laddr.port == self._app_port
@@ -105,7 +106,14 @@ class ProcessSupervisor:
                     log.info("Discovered existing little-brother process (pid=%s)", conn.pid)
                     return
         except Exception as exc:
-            log.warning("Process discovery failed: %s", exc)
+            log.warning("psutil discovery failed: %s", exc)
+
+        # Fall back: if the API is reachable the app is running even if we can't get the PID
+        if self._api_reachable():
+            self._discovered = True
+            log.info("Discovered existing little-brother via API (PID unknown)")
+            return
+
         log.info("No existing process found on port %s", self._app_port)
 
     # ------------------------------------------------------------------
@@ -126,6 +134,12 @@ class ProcessSupervisor:
                 return "running"
             # Discovered process is gone
             self._proc_pid = None
+            self._discovered = False
+            return "stopped"
+        # Discovered via API only (no PID) — check the API is still up
+        if self._discovered:
+            if self._api_reachable():
+                return "running"
             self._discovered = False
             return "stopped"
         return "stopped"
