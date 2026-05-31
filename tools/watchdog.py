@@ -22,14 +22,21 @@ import psutil
 import requests
 from flask import Flask, jsonify
 
+ROOT = Path(__file__).resolve().parent.parent
+
+_log_file = ROOT / "little_brother" / "logs" / "watchdog.log"
+_log_file.parent.mkdir(parents=True, exist_ok=True)
+
+_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [watchdog] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+))
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [watchdog] %(levelname)s %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
+    handlers=[_handler],
 )
 log = logging.getLogger("watchdog")
-
-ROOT = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -73,13 +80,15 @@ class ActionResult:
 
 class ProcessSupervisor:
     def __init__(self, cmd: list, cwd: str, app_url: str,
-                 app_port: int, start_timeout: int, stop_timeout: int):
+                 app_port: int, start_timeout: int, stop_timeout: int,
+                 startup_window: int = 30):
         self._cmd = cmd
         self._cwd = cwd
         self._app_url = app_url.rstrip("/")
         self._app_port = app_port
         self._start_timeout = start_timeout
         self._stop_timeout = stop_timeout
+        self._startup_window = startup_window
 
         self._popen: subprocess.Popen | None = None
         self._proc_pid: int | None = None
@@ -88,33 +97,49 @@ class ProcessSupervisor:
         self._action_lock = threading.Lock()
         self._last_health_check_ms: int | None = None
 
-        self._discover_existing_process()
+        self._discover_existing_process(startup_window=self._startup_window)
 
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------
 
-    def _discover_existing_process(self):
-        # Try psutil port scan first (may fail without admin on Windows)
-        try:
-            for conn in psutil.net_connections(kind="tcp"):
-                if (conn.laddr.port == self._app_port
-                        and conn.status == psutil.CONN_LISTEN
-                        and conn.pid):
-                    self._proc_pid = conn.pid
-                    self._discovered = True
-                    log.info("Discovered existing little-brother process (pid=%s)", conn.pid)
-                    return
-        except Exception as exc:
-            log.warning("psutil discovery failed: %s", exc)
+    def _discover_existing_process(self, startup_window: int = 30):
+        """Try to find a running app process.
 
-        # Fall back: if the API is reachable the app is running even if we can't get the PID
-        if self._api_reachable():
-            self._discovered = True
-            log.info("Discovered existing little-brother via API (PID unknown)")
-            return
+        Retries for up to *startup_window* seconds so that when start.bat
+        launches the app and watchdog simultaneously the watchdog doesn't give
+        up before the app has had time to bind its port.
+        """
+        deadline = time.time() + startup_window
+        attempt = 0
+        while True:
+            attempt += 1
+            # Try psutil port scan first (may fail without admin on Windows)
+            try:
+                for conn in psutil.net_connections(kind="tcp"):
+                    if (conn.laddr.port == self._app_port
+                            and conn.status == psutil.CONN_LISTEN
+                            and conn.pid):
+                        self._proc_pid = conn.pid
+                        self._discovered = True
+                        log.info("Discovered existing little-brother process (pid=%s, attempt=%s)",
+                                 conn.pid, attempt)
+                        return
+            except Exception as exc:
+                log.warning("psutil discovery failed: %s", exc)
 
-        log.info("No existing process found on port %s", self._app_port)
+            # Fall back: if the API is reachable the app is running even if we can't get the PID
+            if self._api_reachable():
+                self._discovered = True
+                log.info("Discovered existing little-brother via API (PID unknown, attempt=%s)", attempt)
+                return
+
+            if time.time() >= deadline:
+                break
+            log.debug("Discovery attempt %s failed — retrying in 2s", attempt)
+            time.sleep(2)
+
+        log.info("No existing process found on port %s after %ss", self._app_port, startup_window)
 
     # ------------------------------------------------------------------
     # Internal state helpers
@@ -488,6 +513,7 @@ def run(config_path: str | None = None):
     start_cmd = wdog.get("app_start_command", ["venv/Scripts/python.exe", "-m", "little_brother"])
     start_timeout = int(wdog.get("start_timeout_seconds", 15))
     stop_timeout = int(wdog.get("stop_timeout_seconds", 10))
+    startup_window = int(wdog.get("startup_discovery_window_seconds", 30))
     auto_start = bool(wdog.get("auto_start_app", False))
 
     if not isinstance(start_cmd, list):
@@ -505,6 +531,7 @@ def run(config_path: str | None = None):
         app_port=app_port,
         start_timeout=start_timeout,
         stop_timeout=stop_timeout,
+        startup_window=startup_window,
     )
 
     if auto_start and supervisor.get_status().process_state != "running":
