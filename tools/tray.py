@@ -216,21 +216,42 @@ def _build_menu(state: TrayState, icon: pystray.Icon):
 # Poll loop
 # ---------------------------------------------------------------------------
 
-def _poll_loop(state: TrayState, icon: pystray.Icon):
-    while True:
-        try:
-            r = requests.get(f"{WATCHDOG_URL}/status", timeout=5)
-            if r.status_code == 200:
-                state.update(r.json())
-            else:
-                state.mark_watchdog_down()
-        except Exception:
-            state.mark_watchdog_down()
+STARTUP_POLL_INTERVAL = 3   # poll fast until watchdog first responds
+STARTUP_TIMEOUT = 60        # give up fast-polling after this many seconds
 
+
+def _poll_watchdog(state: TrayState):
+    try:
+        r = requests.get(f"{WATCHDOG_URL}/status", timeout=5)
+        if r.status_code == 200:
+            state.update(r.json())
+            return True
+    except Exception:
+        pass
+    state.mark_watchdog_down()
+    return False
+
+
+def _poll_loop(state: TrayState, icon: pystray.Icon):
+    # Watchdog blocks on startup discovery (up to 30s) before its Flask server
+    # is ready. Poll fast here so the icon turns green as soon as it's up.
+    deadline = time.time() + STARTUP_TIMEOUT
+    while time.time() < deadline:
+        if _poll_watchdog(state):
+            icon.icon = state.icon_image()
+            icon.title = state.tooltip()
+            icon.menu = _build_menu(state, icon)
+            break
+        icon.icon = state.icon_image()
+        icon.menu = _build_menu(state, icon)
+        time.sleep(STARTUP_POLL_INTERVAL)
+
+    # Steady-state: poll every 30s
+    while True:
+        _poll_watchdog(state)
         icon.icon = state.icon_image()
         icon.title = state.tooltip()
         icon.menu = _build_menu(state, icon)
-
         time.sleep(POLL_INTERVAL)
 
 
