@@ -149,7 +149,16 @@ class ProcessSupervisor:
         if self._popen is not None:
             if self._popen.poll() is None:
                 return "running"
-            # Process exited — clean up
+            # pythonw.exe shim exits after spawning the real Python child.
+            # Check the API before declaring stopped — if it's still reachable
+            # the child is alive and we should track via API from now on.
+            if self._api_reachable():
+                log.info("popen shim exited but API still reachable — switching to API tracking")
+                self._popen = None
+                self._proc_pid = None
+                self._discovered = True
+                return "running"
+            # Process truly gone
             self._popen = None
             self._proc_pid = None
             self._start_time = None
