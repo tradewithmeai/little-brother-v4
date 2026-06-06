@@ -517,10 +517,49 @@ def create_api_blueprint(orchestrator, event_bus):
                 """, (since,)).fetchall()
                 return [{"hour": r["hour"], "count": r["v"]} for r in rows]
 
+            # Bridge status — per-source health for agent consumption
+            bridge_sources = {
+                "active_window":  "active_window_events",
+                "mouse_clicks":   "mouse_click_events",
+                "file_events":    "file_events",
+                "key_events":     "key_events",
+                "browser_tabs_cdp": "browser_tab_events",
+            }
+            bridge_status = {}
+            now_dt = datetime.utcnow()
+            for label, table in bridge_sources.items():
+                row = conn.execute(
+                    f"SELECT COUNT(*) as n, MAX(timestamp) as last_ts "
+                    f"FROM {table} WHERE timestamp >= ?", (since,)
+                ).fetchone()
+                ever_row = conn.execute(
+                    f"SELECT MAX(timestamp) as last_ever FROM {table}"
+                ).fetchone()
+                n = row["n"] or 0
+                last_ts = row["last_ts"] or ever_row["last_ever"]
+                if last_ts:
+                    last_dt = datetime.fromisoformat(last_ts)
+                    age_minutes = int((now_dt - last_dt).total_seconds() / 60)
+                else:
+                    age_minutes = None
+                if n == 0 and age_minutes is None:
+                    status = "dead"
+                elif n == 0 or (age_minutes is not None and age_minutes > 120):
+                    status = "stale"
+                else:
+                    status = "ok"
+                bridge_status[label] = {
+                    "events_in_period": n,
+                    "last_event": last_ts,
+                    "last_event_age_minutes": age_minutes,
+                    "status": status,
+                }
+
             return jsonify({
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "period_hours": hours,
                 "summary": counts,
+                "bridge_status": bridge_status,
                 "top_applications": [
                     {"process": r["process_name"], "switches": r["switches"]}
                     for r in top_apps
