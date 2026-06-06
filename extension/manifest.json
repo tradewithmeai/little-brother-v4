@@ -1,0 +1,24 @@
+{
+  "manifest_version": 2,
+  "name": "Little Brother",
+  "version": "1.0.0",
+  "description": "Sends tab activity to Little Brother activity monitor on localhost.",
+
+  "permissions": [
+    "tabs",
+    "http://localhost/",
+    "http://127.0.0.1/"
+  ],
+
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "little-brother@solvx.local",
+      "strict_min_version": "140.0"
+    }
+  }
+}

@@ -6,6 +6,17 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.serving import make_server
 
+# Write connection for ingesting extension events (separate from the read-only get_db())
+_WRITE_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "little_brother.db")
+_write_lock = threading.Lock()
+
+
+def _write_db():
+    path = os.path.abspath(_WRITE_DB_PATH)
+    conn = sqlite3.connect(path, timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "little_brother.db")
 
@@ -32,6 +43,37 @@ app = Flask(__name__, static_folder="static")
 @app.route("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/api/browser-tab", methods=["POST"])
+def api_browser_tab_ingest():
+    """Receive a single tab event from the Firefox extension."""
+    # Only accept from localhost
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return jsonify({"error": "forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    event_type = data.get("event_type", "").strip()
+    title = (data.get("title") or "")[:500]
+    url = (data.get("url") or "")[:2000]
+
+    if not event_type:
+        return jsonify({"error": "event_type required"}), 400
+
+    ts = datetime.utcnow().isoformat()
+    with _write_lock:
+        conn = _write_db()
+        try:
+            conn.execute(
+                "INSERT INTO browser_tab_events (timestamp, browser, event_type, title, url) "
+                "VALUES (?, 'firefox', ?, ?, ?)",
+                (ts, event_type, title, url),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    return jsonify({"ok": True}), 201
 
 
 @app.route("/api/summary")
