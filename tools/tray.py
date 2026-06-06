@@ -24,7 +24,7 @@ WATCHDOG_URL = "http://localhost:5001"
 DASHBOARD_URL = "http://localhost:5000"
 POLL_INTERVAL = 30
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-AUTOSTART_NAME = "LittleBrotherTray"
+AUTOSTART_NAME = "LittleBrother"
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +130,8 @@ def _is_autostart_enabled() -> bool:
 
 
 def _set_autostart(enable: bool):
-    pythonw = str(ROOT / "venv" / "Scripts" / "pythonw.exe")
-    script = str(ROOT / "tools" / "tray.py")
-    value = f'"{pythonw}" "{script}"'
+    start_bat = str(ROOT / "start.bat")
+    value = f'"{start_bat}"'
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY,
                         access=winreg.KEY_SET_VALUE) as key:
         if enable:
