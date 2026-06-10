@@ -67,6 +67,21 @@ class Database:
             )
             print("[DB] Migrated: added source_tag column to file_events")
 
+        existing_browser = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(browser_tab_events)").fetchall()
+        }
+        if "duration_ms" not in existing_browser:
+            cursor.execute(
+                "ALTER TABLE browser_tab_events ADD COLUMN duration_ms INTEGER DEFAULT NULL"
+            )
+            print("[DB] Migrated: added duration_ms column to browser_tab_events")
+        if "is_foreground" not in existing_browser:
+            cursor.execute(
+                "ALTER TABLE browser_tab_events ADD COLUMN is_foreground INTEGER DEFAULT NULL"
+            )
+            print("[DB] Migrated: added is_foreground column to browser_tab_events")
+
         tables = {
             row[0]
             for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()

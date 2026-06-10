@@ -555,11 +555,50 @@ def create_api_blueprint(orchestrator, event_bus):
                     "status": status,
                 }
 
+            # Current active tab (most recent foreground event, ever)
+            cur_row = conn.execute("""
+                SELECT url, title, timestamp
+                FROM browser_tab_events
+                WHERE is_foreground = 1
+                ORDER BY timestamp DESC LIMIT 1
+            """).fetchone()
+            current_tab = dict(cur_row) if cur_row else None
+
+            # Recent foreground tab visits in period (ordered newest first)
+            recent_fg = conn.execute("""
+                SELECT url, title, timestamp
+                FROM browser_tab_events
+                WHERE is_foreground = 1
+                  AND event_type IN ('activated', 'navigated')
+                  AND timestamp >= ?
+                ORDER BY timestamp DESC LIMIT 15
+            """, (since,)).fetchall()
+
+            # Top URLs by total dwell time in period
+            top_dwell = conn.execute("""
+                SELECT url, title, COUNT(*) as visits, SUM(duration_ms) as total_dwell_ms
+                FROM browser_tab_events
+                WHERE event_type = 'dwell' AND timestamp >= ?
+                GROUP BY url
+                ORDER BY total_dwell_ms DESC LIMIT 15
+            """, (since,)).fetchall()
+
             return jsonify({
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "period_hours": hours,
                 "summary": counts,
                 "bridge_status": bridge_status,
+                "current_tab": current_tab,
+                "recent_tabs": [dict(r) for r in recent_fg],
+                "top_tabs_by_dwell": [
+                    {
+                        "url": r["url"],
+                        "title": r["title"],
+                        "visits": r["visits"],
+                        "total_dwell_ms": r["total_dwell_ms"],
+                    }
+                    for r in top_dwell
+                ],
                 "top_applications": [
                     {"process": r["process_name"], "switches": r["switches"]}
                     for r in top_apps

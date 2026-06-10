@@ -60,14 +60,24 @@ def api_browser_tab_ingest():
     if not event_type:
         return jsonify({"error": "event_type required"}), 400
 
+    raw_duration = data.get("duration_ms")
+    try:
+        duration_ms = int(raw_duration) if raw_duration is not None else None
+    except (ValueError, TypeError):
+        duration_ms = None
+
+    raw_fg = data.get("is_foreground")
+    is_foreground = (1 if raw_fg else 0) if raw_fg is not None else None
+
     ts = datetime.utcnow().isoformat()
     with _write_lock:
         conn = _write_db()
         try:
             conn.execute(
-                "INSERT INTO browser_tab_events (timestamp, browser, event_type, title, url) "
-                "VALUES (?, 'firefox', ?, ?, ?)",
-                (ts, event_type, title, url),
+                "INSERT INTO browser_tab_events "
+                "(timestamp, browser, event_type, title, url, duration_ms, is_foreground) "
+                "VALUES (?, 'firefox', ?, ?, ?, ?, ?)",
+                (ts, event_type, title, url, duration_ms, is_foreground),
             )
             conn.commit()
         finally:
