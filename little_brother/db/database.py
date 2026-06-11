@@ -67,6 +67,31 @@ class Database:
             )
             print("[DB] Migrated: added source_tag column to file_events")
 
+        existing_file = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(file_events)").fetchall()
+        }
+        if "workspace" not in existing_file:
+            cursor.execute(
+                "ALTER TABLE file_events ADD COLUMN workspace TEXT DEFAULT NULL"
+            )
+            print("[DB] Migrated: added workspace column to file_events")
+        if "file_class" not in existing_file:
+            cursor.execute(
+                "ALTER TABLE file_events ADD COLUMN file_class TEXT DEFAULT NULL"
+            )
+            print("[DB] Migrated: added file_class column to file_events")
+
+        existing_key = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(key_events)").fetchall()
+        }
+        if "input_method" not in existing_key:
+            cursor.execute(
+                "ALTER TABLE key_events ADD COLUMN input_method TEXT DEFAULT NULL"
+            )
+            print("[DB] Migrated: added input_method column to key_events")
+
         existing_browser = {
             row[1]
             for row in cursor.execute("PRAGMA table_info(browser_tab_events)").fetchall()
@@ -238,7 +263,7 @@ class Database:
             "url": url
         })
 
-    def log_key_event(self, timestamp, window_title, process_name, text_chunk, key_count, suppressed=0):
+    def log_key_event(self, timestamp, window_title, process_name, text_chunk, key_count, suppressed=0, input_method=None):
         self.write_event("key_events", {
             "timestamp": timestamp,
             "window_title": window_title,
@@ -246,24 +271,18 @@ class Database:
             "text_chunk": text_chunk,
             "key_count": key_count,
             "suppressed": suppressed,
+            "input_method": input_method,
         })
 
-    def log_file_event(self, timestamp, event_type, src_path, is_directory, source_tag="human"):
-        """Log a filesystem event.
-
-        Args:
-            timestamp: ISO format timestamp string
-            event_type: Type of event ('created', 'modified', 'deleted', 'moved')
-            src_path: Path to the file or directory
-            is_directory: 1 if directory, 0 if file
-            source_tag: 'human' or 'agent_activity'
-        """
+    def log_file_event(self, timestamp, event_type, src_path, is_directory, source_tag="human", workspace=None, file_class=None):
         self.write_event("file_events", {
             "timestamp": timestamp,
             "event_type": event_type,
             "src_path": src_path,
             "is_directory": is_directory,
             "source_tag": source_tag,
+            "workspace": workspace,
+            "file_class": file_class,
         })
 
 

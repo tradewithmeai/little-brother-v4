@@ -60,6 +60,10 @@ class KeyboardMonitor:
         self._flush_timer = None
         self._last_chunk_sig = None  # (text_chunk, key_count) of last write, for dedup
         self._dedup_lock = threading.Lock()
+        # Input method tracking for current buffer
+        self._paste_detected = False
+        self._delete_count = 0
+        self._printable_count = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -112,12 +116,18 @@ class KeyboardMonitor:
 
                 # Printable character
                 if hasattr(key, "char") and key.char is not None:
+                    if key.char == "\x16":  # Ctrl+V — paste
+                        self._paste_detected = True
+                    elif key.char.isprintable():
+                        self._printable_count += 1
                     self._buffer.append(key.char)
                 else:
                     # Special / modifier key
                     name = getattr(key, "name", None) or str(key)
                     token = _SPECIAL_KEYS.get(name)
                     if token is not None:
+                        if name in ("backspace", "delete"):
+                            self._delete_count += 1
                         self._buffer.append(token)
                     # None means suppress token (shift, caps_lock, etc.)
 
@@ -170,14 +180,29 @@ class KeyboardMonitor:
         self._buffer.clear()
         self._last_key_time = None
 
+        # Determine input method from tracked counts
+        paste = self._paste_detected
+        deletes = self._delete_count
+        printable = self._printable_count
+        self._paste_detected = False
+        self._delete_count = 0
+        self._printable_count = 0
+
+        if paste:
+            input_method = "pasted"
+        elif deletes > 0 and printable == 0:
+            input_method = "deleted"
+        else:
+            input_method = "typed"
+
         # Fire the write outside the lock to avoid deadlock on DB operations
         threading.Thread(
             target=self._write_chunk,
-            args=(text_chunk, key_count),
+            args=(text_chunk, key_count, input_method),
             daemon=True,
         ).start()
 
-    def _write_chunk(self, text_chunk, key_count):
+    def _write_chunk(self, text_chunk, key_count, input_method="typed"):
         try:
             # Deduplicate: drop if identical to the last written chunk
             # (catches two-instance race where both write the same buffer)
@@ -198,6 +223,7 @@ class KeyboardMonitor:
                 text_chunk="[SUPPRESSED]" if suppressed else text_chunk,
                 key_count=key_count,
                 suppressed=1 if suppressed else 0,
+                input_method=input_method,
             )
         except Exception as e:
             print(f"[Keyboard] Error writing chunk: {e}")

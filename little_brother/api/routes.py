@@ -555,6 +555,25 @@ def create_api_blueprint(orchestrator, event_bus):
                     "status": status,
                 }
 
+            # File activity by workspace and class (human activity only)
+            file_by_workspace = conn.execute("""
+                SELECT workspace, file_class, COUNT(*) as cnt
+                FROM file_events
+                WHERE timestamp >= ? AND source_tag = 'human'
+                  AND workspace IS NOT NULL AND file_class IS NOT NULL
+                GROUP BY workspace, file_class
+                ORDER BY cnt DESC LIMIT 30
+            """, (since,)).fetchall()
+
+            # Keystroke input method breakdown
+            ks_by_method = conn.execute("""
+                SELECT input_method, COUNT(*) as chunks, SUM(key_count) as keys
+                FROM key_events
+                WHERE timestamp >= ? AND suppressed = 0
+                GROUP BY input_method
+                ORDER BY keys DESC
+            """, (since,)).fetchall()
+
             # Current active tab (most recent foreground event, ever)
             cur_row = conn.execute("""
                 SELECT url, title, timestamp
@@ -588,6 +607,8 @@ def create_api_blueprint(orchestrator, event_bus):
                 "period_hours": hours,
                 "summary": counts,
                 "bridge_status": bridge_status,
+                "file_by_workspace": [dict(r) for r in file_by_workspace],
+                "keystroke_input_methods": [dict(r) for r in ks_by_method],
                 "current_tab": current_tab,
                 "recent_tabs": [dict(r) for r in recent_fg],
                 "top_tabs_by_dwell": [

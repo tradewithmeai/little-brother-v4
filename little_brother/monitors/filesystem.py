@@ -4,6 +4,65 @@ import time
 from collections import deque
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# File classification by extension
+# ---------------------------------------------------------------------------
+
+_SOURCE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt", ".scala", ".sql",
+    ".sh", ".bat", ".ps1", ".html", ".css", ".scss", ".sass", ".less",
+    ".vue", ".svelte", ".md", ".rst", ".r", ".m", ".lua", ".ex", ".exs",
+}
+
+_CONFIG_EXTENSIONS = {
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".env", ".cfg", ".conf",
+    ".xml", ".plist", ".lock", ".editorconfig", ".gitignore",
+}
+
+_DOCUMENT_EXTENSIONS = {
+    ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
+    ".txt", ".rtf", ".odt", ".ods", ".csv",
+}
+
+_MEDIA_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp",
+    ".mp4", ".mp3", ".wav", ".avi", ".mov", ".mkv", ".flac",
+}
+
+
+def _classify_file(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext in _SOURCE_EXTENSIONS:
+        return "source"
+    if ext in _CONFIG_EXTENSIONS:
+        return "config"
+    if ext in _DOCUMENT_EXTENSIONS:
+        return "document"
+    if ext in _MEDIA_EXTENSIONS:
+        return "media"
+    return "other"
+
+
+def _get_workspace(path: str, watched_roots: list) -> str | None:
+    """Return workspace name derived from the watched root this path falls under."""
+    try:
+        p = Path(path)
+        for root in watched_roots:
+            root_p = Path(root)
+            try:
+                rel = p.relative_to(root_p)
+                parts = rel.parts
+                if not parts:
+                    return root_p.name
+                return parts[0]
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 # File extensions that are never worth recording
 _EXCLUDED_EXTENSIONS = {
     ".db", ".db-journal", ".db-wal", ".db-shm",
@@ -183,12 +242,16 @@ class FileSystemMonitor:
         try:
             timestamp = datetime.datetime.utcnow().isoformat()
             source_tag = self._tagger.tag(event.src_path)
+            workspace = _get_workspace(event.src_path, self._watch_paths)
+            file_class = _classify_file(event.src_path) if not event.is_directory else "directory"
             self.db.log_file_event(
                 timestamp=timestamp,
                 event_type=event_type,
                 src_path=event.src_path,
                 is_directory=1 if event.is_directory else 0,
                 source_tag=source_tag,
+                workspace=workspace,
+                file_class=file_class,
             )
         except Exception as e:
             print(f"[Filesystem] Error logging event: {e}")

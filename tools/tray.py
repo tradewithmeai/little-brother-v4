@@ -113,13 +113,6 @@ def _fmt_uptime(seconds: int | None) -> str:
     return f"{h}h {m:02d}m" if h else f"{m}m"
 
 
-def _watchdog_post(path: str):
-    try:
-        requests.post(f"{WATCHDOG_URL}{path}", timeout=10)
-    except Exception:
-        pass
-
-
 def _is_autostart_enabled() -> bool:
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as key:
@@ -158,15 +151,6 @@ def _build_menu(state: TrayState, icon: pystray.Icon):
     def open_dashboard(_icon, _item):
         webbrowser.open(DASHBOARD_URL)
 
-    def start_lb(_icon, _item):
-        _watchdog_post("/control/start")
-
-    def stop_lb(_icon, _item):
-        _watchdog_post("/control/stop")
-
-    def restart_lb(_icon, _item):
-        _watchdog_post("/control/restart")
-
     def toggle_autostart(_icon, _item):
         _set_autostart(not _is_autostart_enabled())
 
@@ -195,10 +179,6 @@ def _build_menu(state: TrayState, icon: pystray.Icon):
     items += [
         _separator(),
         pystray.MenuItem("Open Dashboard", open_dashboard),
-        _separator(),
-        pystray.MenuItem("Start LB", start_lb),
-        pystray.MenuItem("Stop LB", stop_lb),
-        pystray.MenuItem("Restart LB", restart_lb),
         _separator(),
         pystray.MenuItem(
             "Start with Windows",
