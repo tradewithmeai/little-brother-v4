@@ -243,14 +243,30 @@ def api_browser_tabs():
             ORDER BY cnt DESC
         """, (since,)).fetchall()
 
-        # Chrome CDP tab events
-        cdp_recent = conn.execute("""
-            SELECT timestamp, browser, event_type, title, url
-            FROM browser_tab_events
-            WHERE timestamp >= ?
-            ORDER BY id DESC
-            LIMIT 30
-        """, (since,)).fetchall()
+        # CDP freshness check (Chrome only)
+        cdp_ever = conn.execute(
+            "SELECT MAX(timestamp) as last_ts FROM browser_tab_events WHERE browser = 'chrome'"
+        ).fetchone()
+        cdp_last_ts = cdp_ever["last_ts"] if cdp_ever else None
+        if cdp_last_ts:
+            cdp_age_min = int(
+                (datetime.utcnow() - datetime.fromisoformat(cdp_last_ts)).total_seconds() / 60
+            )
+            cdp_status = "ok" if cdp_age_min < 30 else ("stale" if cdp_age_min < 240 else "unavailable")
+        else:
+            cdp_age_min = None
+            cdp_status = "unavailable"
+
+        # Only return CDP events when source is fresh; suppress stale/unavailable data
+        if cdp_status == "ok":
+            cdp_recent = conn.execute("""
+                SELECT timestamp, browser, event_type, title, url
+                FROM browser_tab_events
+                WHERE timestamp >= ? AND browser = 'chrome'
+                ORDER BY id DESC LIMIT 30
+            """, (since,)).fetchall()
+        else:
+            cdp_recent = []
 
         # Firefox and Chrome activity via active window titles
         # Window title format: "Page Title — Mozilla Firefox" or "Page Title - Google Chrome"
@@ -280,6 +296,11 @@ def api_browser_tabs():
 
         return jsonify({
             "by_type": [dict(r) for r in by_type],
+            "cdp_status": {
+                "status": cdp_status,
+                "last_event": cdp_last_ts,
+                "age_minutes": cdp_age_min,
+            },
             "cdp_recent": [dict(r) for r in cdp_recent],
             "browser_windows": [dict(r) for r in browser_windows],
             "top_pages": [dict(r) for r in top_pages],

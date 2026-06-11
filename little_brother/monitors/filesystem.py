@@ -236,6 +236,16 @@ class FileSystemMonitor:
             pass
         return False
 
+    def _is_noise(self, path: str) -> bool:
+        """Return True if path falls under a configured noise prefix."""
+        prefixes = self.config.get("noise_path_prefixes", [])
+        norm = path.lower().replace("\\", "/")
+        for p in prefixes:
+            prefix_norm = p.lower().replace("\\", "/").rstrip("/")
+            if norm.startswith(prefix_norm + "/") or norm == prefix_norm:
+                return True
+        return False
+
     def _log(self, event, event_type):
         if self._should_ignore(event.src_path):
             return
@@ -243,7 +253,12 @@ class FileSystemMonitor:
             timestamp = datetime.datetime.utcnow().isoformat()
             source_tag = self._tagger.tag(event.src_path)
             workspace = _get_workspace(event.src_path, self._watch_paths)
-            file_class = _classify_file(event.src_path) if not event.is_directory else "directory"
+            if event.is_directory:
+                file_class = "directory"
+            elif self._is_noise(event.src_path):
+                file_class = "raw_data"
+            else:
+                file_class = _classify_file(event.src_path)
             self.db.log_file_event(
                 timestamp=timestamp,
                 event_type=event_type,

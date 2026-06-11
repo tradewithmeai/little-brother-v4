@@ -7,6 +7,9 @@
     "D:/Documents/11Projects",
     "C:/Users/%%USERNAME%%/Downloads"
   ],
+  "noise_path_prefixes": [
+    "D:/Documents/11Projects/crypto-lake-rs/data/raw"
+  ],
   "api_key": "ecffce0a195432624cb8a47d0753507e5b9c1ba14006f35bcc562ebb7967a472",
   "webhooks": [],
   "watchdog": {

@@ -496,17 +496,30 @@ def create_api_blueprint(orchestrator, event_bus):
                 ORDER BY focus_count DESC LIMIT 15
             """, (since,)).fetchall()
 
-            # Top directories
-            raw_paths = conn.execute("""
+            # Top directories — exclude raw_data and agent activity noise
+            signal_paths = conn.execute("""
                 SELECT src_path, COUNT(*) as cnt FROM file_events
-                WHERE timestamp >= ? GROUP BY src_path ORDER BY cnt DESC
+                WHERE timestamp >= ?
+                  AND (file_class IS NULL OR file_class NOT IN ('raw_data', 'directory'))
+                  AND source_tag != 'agent_activity'
+                GROUP BY src_path ORDER BY cnt DESC
             """, (since,)).fetchall()
             dir_counts = {}
-            for r in raw_paths:
+            for r in signal_paths:
                 path = r["src_path"].replace("\\", "/")
                 parent = "/".join(path.split("/")[:-1]) if "/" in path else path
                 dir_counts[parent] = dir_counts.get(parent, 0) + r["cnt"]
             top_dirs = sorted(dir_counts.items(), key=lambda x: -x[1])[:10]
+
+            # Noise summary — raw_data events collapsed by workspace
+            noise_rows = conn.execute("""
+                SELECT COALESCE(workspace, 'unknown') as workspace,
+                       COUNT(*) as event_count
+                FROM file_events
+                WHERE timestamp >= ? AND file_class = 'raw_data'
+                GROUP BY workspace ORDER BY event_count DESC
+            """, (since,)).fetchall()
+            noise_file_summary = [dict(r) for r in noise_rows]
 
             # Hourly timeline (bucketed by hour)
             def hourly(table, value_col="COUNT(*)"):
@@ -554,6 +567,59 @@ def create_api_blueprint(orchestrator, event_bus):
                     "last_event_age_minutes": age_minutes,
                     "status": status,
                 }
+
+            # Browser source health — Firefox extension vs CDP vs active-window scan
+            browser_sources = {}
+            for label, where in [
+                ("firefox_extension", "browser = 'firefox'"),
+                ("cdp_chrome",        "browser = 'chrome'"),
+            ]:
+                brow = conn.execute(
+                    f"SELECT COUNT(*) as n, MAX(timestamp) as last_ts "
+                    f"FROM browser_tab_events WHERE timestamp >= ? AND {where}", (since,)
+                ).fetchone()
+                brow_ever = conn.execute(
+                    f"SELECT MAX(timestamp) as last_ever FROM browser_tab_events WHERE {where}"
+                ).fetchone()
+                n = brow["n"] or 0
+                last_ts = brow["last_ts"] or brow_ever["last_ever"]
+                if last_ts:
+                    age_min = int((now_dt - datetime.fromisoformat(last_ts)).total_seconds() / 60)
+                else:
+                    age_min = None
+                if n == 0 and age_min is None:
+                    bstatus = "unavailable"
+                elif n == 0 or (age_min is not None and age_min > 60):
+                    bstatus = "stale"
+                else:
+                    bstatus = "ok"
+                browser_sources[label] = {
+                    "events_in_period": n, "last_event": last_ts,
+                    "age_minutes": age_min, "status": bstatus,
+                }
+
+            aw_brow = conn.execute("""
+                SELECT COUNT(*) as n, MAX(timestamp) as last_ts
+                FROM active_window_events
+                WHERE timestamp >= ?
+                  AND (process_name LIKE '%firefox%' OR process_name LIKE '%chrome%'
+                       OR process_name LIKE '%msedge%')
+            """, (since,)).fetchone()
+            aw_n = aw_brow["n"] or 0
+            aw_last = aw_brow["last_ts"]
+            if aw_n > 0:
+                aw_bstatus = "ok"
+                aw_age = int((now_dt - datetime.fromisoformat(aw_last)).total_seconds() / 60)
+            elif aw_last:
+                aw_age = int((now_dt - datetime.fromisoformat(aw_last)).total_seconds() / 60)
+                aw_bstatus = "stale" if aw_age < 120 else "unavailable"
+            else:
+                aw_age = None
+                aw_bstatus = "unavailable"
+            browser_sources["active_window_scan"] = {
+                "events_in_period": aw_n, "last_event": aw_last,
+                "age_minutes": aw_age, "status": aw_bstatus,
+            }
 
             # File activity by workspace and class (human activity only)
             file_by_workspace = conn.execute("""
@@ -607,6 +673,8 @@ def create_api_blueprint(orchestrator, event_bus):
                 "period_hours": hours,
                 "summary": counts,
                 "bridge_status": bridge_status,
+                "browser_sources": browser_sources,
+                "noise_file_summary": noise_file_summary,
                 "file_by_workspace": [dict(r) for r in file_by_workspace],
                 "keystroke_input_methods": [dict(r) for r in ks_by_method],
                 "current_tab": current_tab,
