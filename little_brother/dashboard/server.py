@@ -192,38 +192,51 @@ def api_file_events():
     since = hours_ago(hours)
     conn = get_db()
     try:
-        noise_filter = "src_path NOT LIKE '%betty_seq.json%' AND src_path NOT LIKE '%health.json%'"
+        internal_filter = "src_path NOT LIKE '%betty_seq.json%' AND src_path NOT LIKE '%health.json%'"
 
-        # Events by type
+        # Events by type (all, for full picture)
         by_type = conn.execute(f"""
             SELECT event_type, COUNT(*) as cnt
             FROM file_events
-            WHERE timestamp >= ? AND {noise_filter}
+            WHERE timestamp >= ? AND {internal_filter}
             GROUP BY event_type
             ORDER BY cnt DESC
         """, (since,)).fetchall()
 
-        # Simpler approach - just get raw paths and group in Python
-        raw = conn.execute(f"""
+        # Top dirs — human signal only (exclude raw_data and agent activity)
+        signal_rows = conn.execute(f"""
             SELECT src_path, COUNT(*) as cnt
             FROM file_events
-            WHERE timestamp >= ? AND {noise_filter}
+            WHERE timestamp >= ?
+              AND {internal_filter}
+              AND (file_class IS NULL OR file_class NOT IN ('raw_data', 'directory'))
+              AND source_tag != 'agent_activity'
             GROUP BY src_path
             ORDER BY cnt DESC
         """, (since,)).fetchall()
 
-        # Group by parent directory in Python
         dir_counts = {}
-        for r in raw:
+        for r in signal_rows:
             path = r["src_path"].replace("\\", "/")
             parent = "/".join(path.split("/")[:-1]) if "/" in path else path
             dir_counts[parent] = dir_counts.get(parent, 0) + r["cnt"]
+        top_dirs = sorted(dir_counts.items(), key=lambda x: -x[1])[:15]
 
-        top_dirs_clean = sorted(dir_counts.items(), key=lambda x: -x[1])[:15]
+        # Noise summary — collapsed raw_data by workspace
+        noise_rows = conn.execute(f"""
+            SELECT COALESCE(workspace, 'unknown') as workspace,
+                   COUNT(*) as event_count
+            FROM file_events
+            WHERE timestamp >= ?
+              AND {internal_filter}
+              AND file_class = 'raw_data'
+            GROUP BY workspace ORDER BY event_count DESC
+        """, (since,)).fetchall()
 
         return jsonify({
             "by_type": [dict(r) for r in by_type],
-            "top_dirs": [{"path": d[0], "count": d[1]} for d in top_dirs_clean],
+            "top_dirs": [{"path": d[0], "count": d[1]} for d in top_dirs],
+            "noise_file_summary": [dict(r) for r in noise_rows],
         })
     finally:
         conn.close()
