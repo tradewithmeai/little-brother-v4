@@ -137,6 +137,20 @@ class Database:
             )
             print("[DB] Migrated: added process_name column to mouse_click_events")
 
+        # Performance indexes — safe to run repeatedly via IF NOT EXISTS
+        cursor.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_file_events_ts        ON file_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_file_events_class     ON file_events(file_class, source_tag);
+            CREATE INDEX IF NOT EXISTS idx_file_events_workspace ON file_events(workspace);
+            CREATE INDEX IF NOT EXISTS idx_active_window_ts      ON active_window_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_mouse_click_ts        ON mouse_click_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_key_events_ts         ON key_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_browser_tab_ts        ON browser_tab_events(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_browser_tab_fg        ON browser_tab_events(is_foreground, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_file_events_class_ts  ON file_events(file_class, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_file_events_source_ts ON file_events(source_tag, timestamp);
+        """)
+
         tables = {
             row[0]
             for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
