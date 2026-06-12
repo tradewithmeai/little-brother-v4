@@ -107,6 +107,36 @@ class Database:
             )
             print("[DB] Migrated: added is_foreground column to browser_tab_events")
 
+        existing_browser = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(browser_tab_events)").fetchall()
+        }
+        if "tab_id" not in existing_browser:
+            cursor.execute(
+                "ALTER TABLE browser_tab_events ADD COLUMN tab_id TEXT DEFAULT NULL"
+            )
+            print("[DB] Migrated: added tab_id column to browser_tab_events")
+
+        existing_file2 = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(file_events)").fetchall()
+        }
+        if "file_size" not in existing_file2:
+            cursor.execute(
+                "ALTER TABLE file_events ADD COLUMN file_size INTEGER DEFAULT NULL"
+            )
+            print("[DB] Migrated: added file_size column to file_events")
+
+        existing_mouse = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(mouse_click_events)").fetchall()
+        }
+        if "process_name" not in existing_mouse:
+            cursor.execute(
+                "ALTER TABLE mouse_click_events ADD COLUMN process_name TEXT DEFAULT NULL"
+            )
+            print("[DB] Migrated: added process_name column to mouse_click_events")
+
         tables = {
             row[0]
             for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -227,22 +257,14 @@ class Database:
             "hwnd": hwnd
         })
 
-    def log_mouse_click(self, timestamp, button, x, y, window_title):
-        """Log a mouse click event.
-
-        Args:
-            timestamp: ISO format timestamp string
-            button: Mouse button ('left', 'right', 'middle')
-            x: X coordinate of click
-            y: Y coordinate of click
-            window_title: Title of window where click occurred
-        """
+    def log_mouse_click(self, timestamp, button, x, y, window_title, process_name=None):
         self.write_event("mouse_click_events", {
             "timestamp": timestamp,
             "button": button,
             "x": x,
             "y": y,
-            "window_title": window_title
+            "window_title": window_title,
+            "process_name": process_name,
         })
 
     def log_browser_tab(self, timestamp, browser, event_type, title, url):
@@ -274,7 +296,7 @@ class Database:
             "input_method": input_method,
         })
 
-    def log_file_event(self, timestamp, event_type, src_path, is_directory, source_tag="human", workspace=None, file_class=None):
+    def log_file_event(self, timestamp, event_type, src_path, is_directory, source_tag="human", workspace=None, file_class=None, file_size=None):
         self.write_event("file_events", {
             "timestamp": timestamp,
             "event_type": event_type,
@@ -283,6 +305,7 @@ class Database:
             "source_tag": source_tag,
             "workspace": workspace,
             "file_class": file_class,
+            "file_size": file_size,
         })
 
 

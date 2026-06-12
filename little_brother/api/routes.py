@@ -640,9 +640,26 @@ def create_api_blueprint(orchestrator, event_bus):
                 ORDER BY keys DESC
             """, (since,)).fetchall()
 
+            # Current foreground window (exact state at digest generation time)
+            cur_win_row = conn.execute("""
+                SELECT timestamp, window_title, process_name, process_path
+                FROM active_window_events
+                ORDER BY id DESC LIMIT 1
+            """).fetchone()
+            if cur_win_row:
+                cur_win_age = int((now_dt - datetime.fromisoformat(cur_win_row["timestamp"])).total_seconds())
+                current_window = {
+                    "window_title": cur_win_row["window_title"],
+                    "process_name": cur_win_row["process_name"],
+                    "last_seen": cur_win_row["timestamp"],
+                    "age_seconds": cur_win_age,
+                }
+            else:
+                current_window = None
+
             # Current active tab (most recent foreground event, ever)
             cur_row = conn.execute("""
-                SELECT url, title, timestamp
+                SELECT url, title, tab_id, timestamp
                 FROM browser_tab_events
                 WHERE is_foreground = 1
                 ORDER BY timestamp DESC LIMIT 1
@@ -651,7 +668,7 @@ def create_api_blueprint(orchestrator, event_bus):
 
             # Recent foreground tab visits in period (ordered newest first)
             recent_fg = conn.execute("""
-                SELECT url, title, timestamp
+                SELECT url, title, tab_id, timestamp
                 FROM browser_tab_events
                 WHERE is_foreground = 1
                   AND event_type IN ('activated', 'navigated')
@@ -668,10 +685,19 @@ def create_api_blueprint(orchestrator, event_bus):
                 ORDER BY total_dwell_ms DESC LIMIT 15
             """, (since,)).fetchall()
 
+            # Domain-level dwell aggregation
+            domain_dwell = {}
+            for r in top_dwell:
+                d = _domain(r["url"])
+                if d:
+                    domain_dwell[d] = domain_dwell.get(d, 0) + (r["total_dwell_ms"] or 0)
+            top_domains = sorted(domain_dwell.items(), key=lambda x: -x[1])[:10]
+
             return jsonify({
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "period_hours": hours,
                 "summary": counts,
+                "current_window": current_window,
                 "bridge_status": bridge_status,
                 "browser_sources": browser_sources,
                 "noise_file_summary": noise_file_summary,
@@ -687,6 +713,9 @@ def create_api_blueprint(orchestrator, event_bus):
                         "total_dwell_ms": r["total_dwell_ms"],
                     }
                     for r in top_dwell
+                ],
+                "top_domains_by_dwell": [
+                    {"domain": d, "total_dwell_ms": ms} for d, ms in top_domains
                 ],
                 "top_applications": [
                     {"process": r["process_name"], "switches": r["switches"]}

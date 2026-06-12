@@ -35,6 +35,24 @@ def hours_ago(hours):
     return dt.isoformat()
 
 
+def _freshness(conn, table, since):
+    """Return freshness metadata for a table within the query period."""
+    row = conn.execute(
+        f"SELECT MAX(timestamp) as last_ts FROM {table} WHERE timestamp >= ?", (since,)
+    ).fetchone()
+    last_ts = row["last_ts"] if row else None
+    if not last_ts:
+        row2 = conn.execute(f"SELECT MAX(timestamp) as last_ts FROM {table}").fetchone()
+        last_ts = row2["last_ts"] if row2 else None
+    if last_ts:
+        age_s = int((datetime.utcnow() - datetime.fromisoformat(last_ts)).total_seconds())
+        status = "ok" if age_s < 300 else ("stale" if age_s < 7200 else "unavailable")
+    else:
+        age_s = None
+        status = "unavailable"
+    return {"last_event": last_ts, "age_seconds": age_s, "status": status}
+
+
 # --- Flask app ---
 
 app = Flask(__name__, static_folder="static")
@@ -56,6 +74,7 @@ def api_browser_tab_ingest():
     event_type = data.get("event_type", "").strip()
     title = (data.get("title") or "")[:500]
     url = (data.get("url") or "")[:2000]
+    tab_id = (data.get("tab_id") or "")[:50] or None
 
     if not event_type:
         return jsonify({"error": "event_type required"}), 400
@@ -75,9 +94,9 @@ def api_browser_tab_ingest():
         try:
             conn.execute(
                 "INSERT INTO browser_tab_events "
-                "(timestamp, browser, event_type, title, url, duration_ms, is_foreground) "
-                "VALUES (?, 'firefox', ?, ?, ?, ?, ?)",
-                (ts, event_type, title, url, duration_ms, is_foreground),
+                "(timestamp, browser, event_type, title, url, tab_id, duration_ms, is_foreground) "
+                "VALUES (?, 'firefox', ?, ?, ?, ?, ?, ?)",
+                (ts, event_type, title, url, tab_id, duration_ms, is_foreground),
             )
             conn.commit()
         finally:
@@ -139,6 +158,7 @@ def api_active_windows():
         """, (since,)).fetchall()
 
         return jsonify({
+            "freshness": _freshness(conn, "active_window_events", since),
             "top_apps": [dict(r) for r in top_apps],
             "recent": [dict(r) for r in recent],
         })
@@ -177,9 +197,21 @@ def api_mouse_clicks():
             WHERE timestamp >= ?
         """, (since,)).fetchall()
 
+        # Per-process click counts (uses process_name column added by migration)
+        by_process = conn.execute("""
+            SELECT COALESCE(process_name, '') as process_name, COUNT(*) as cnt
+            FROM mouse_click_events
+            WHERE timestamp >= ? AND process_name IS NOT NULL AND process_name != ''
+            GROUP BY process_name
+            ORDER BY cnt DESC
+            LIMIT 10
+        """, (since,)).fetchall()
+
         return jsonify({
+            "freshness": _freshness(conn, "mouse_click_events", since),
             "by_button": [dict(r) for r in by_button],
             "by_window": [{"title": r["window_title"][:80], "count": r["cnt"]} for r in by_window],
+            "by_process": [dict(r) for r in by_process],
             "positions": [dict(r) for r in positions],
         })
     finally:
@@ -233,10 +265,25 @@ def api_file_events():
             GROUP BY workspace ORDER BY event_count DESC
         """, (since,)).fetchall()
 
+        # Recent individual signal events with operation type, path, size
+        recent_events = conn.execute(f"""
+            SELECT timestamp, event_type, src_path, file_class, workspace,
+                   file_size, source_tag
+            FROM file_events
+            WHERE timestamp >= ?
+              AND {internal_filter}
+              AND (file_class IS NULL OR file_class NOT IN ('raw_data', 'directory'))
+              AND source_tag != 'agent_activity'
+            ORDER BY id DESC
+            LIMIT 30
+        """, (since,)).fetchall()
+
         return jsonify({
+            "freshness": _freshness(conn, "file_events", since),
             "by_type": [dict(r) for r in by_type],
             "top_dirs": [{"path": d[0], "count": d[1]} for d in top_dirs],
             "noise_file_summary": [dict(r) for r in noise_rows],
+            "recent_events": [dict(r) for r in recent_events],
         })
     finally:
         conn.close()
@@ -308,6 +355,7 @@ def api_browser_tabs():
         """, (since,)).fetchall()
 
         return jsonify({
+            "freshness": _freshness(conn, "browser_tab_events", since),
             "by_type": [dict(r) for r in by_type],
             "cdp_status": {
                 "status": cdp_status,
@@ -391,6 +439,7 @@ def api_keystrokes():
         """, (since,)).fetchall()
 
         return jsonify({
+            "freshness": _freshness(conn, "key_events", since),
             "stats": dict(stats),
             "by_window": [dict(r) for r in by_window],
             "recent": [dict(r) for r in recent],

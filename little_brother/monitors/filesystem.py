@@ -44,6 +44,13 @@ def _classify_file(path: str) -> str:
     return "other"
 
 
+def _get_file_size(path: str):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
 def _get_workspace(path: str, watched_roots: list) -> str | None:
     """Return workspace name derived from the watched root this path falls under."""
     try:
@@ -255,10 +262,13 @@ class FileSystemMonitor:
             workspace = _get_workspace(event.src_path, self._watch_paths)
             if event.is_directory:
                 file_class = "directory"
+                file_size = None
             elif self._is_noise(event.src_path):
                 file_class = "raw_data"
+                file_size = None
             else:
                 file_class = _classify_file(event.src_path)
+                file_size = _get_file_size(event.src_path) if event_type in ("created", "modified") else None
             self.db.log_file_event(
                 timestamp=timestamp,
                 event_type=event_type,
@@ -267,6 +277,7 @@ class FileSystemMonitor:
                 source_tag=source_tag,
                 workspace=workspace,
                 file_class=file_class,
+                file_size=file_size,
             )
         except Exception as e:
             print(f"[Filesystem] Error logging event: {e}")
