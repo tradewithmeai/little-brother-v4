@@ -331,7 +331,7 @@ VPS port 5001 ←→ local port 5000
 ssh -N -R 5001:127.0.0.1:5000 root@<vps-ip>
 ```
 
-`tools/watchdog.py` at `D:\...\hermes\BEtty-hermes\tunnel.bat` maintains the tunnel with auto-reconnect.
+`tools/tunnel_keeper.py` maintains the tunnel with auto-reconnect (runs via `start.bat`). Forwards port 5001 (LB) and 5055 (Social Monitor) to all configured Hermes VPS instances.
 
 Primary endpoint for Hermes: `GET /api/v1/digest?hours=N` — returns the full activity picture in a single authenticated call.
 

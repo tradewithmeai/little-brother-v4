@@ -2,8 +2,10 @@ import signal
 import sys
 import socket
 import os
+import traceback
 
 from .main import LittleBrother
+from .bootlog import boot_log, crash_log
 
 # Single-instance lock: bind a local socket on a fixed port.
 # If it's already bound, another instance is running — exit immediately.
@@ -28,10 +30,18 @@ def handle_exit(signum, frame):
 
 
 if __name__ == "__main__":
-    acquire_instance_lock()
+    boot_log("app process launched (-m little_brother)")
+    try:
+        acquire_instance_lock()
 
-    signal.signal(signal.SIGINT, handle_exit)
-    signal.signal(signal.SIGTERM, handle_exit)
+        signal.signal(signal.SIGINT, handle_exit)
+        signal.signal(signal.SIGTERM, handle_exit)
 
-    lb = LittleBrother()
-    lb.run()
+        lb = LittleBrother()
+        lb.run()
+    except SystemExit:
+        # Clean exit (e.g. single-instance lock already held) — not a crash.
+        raise
+    except Exception:
+        crash_log("FATAL in app startup:\n" + traceback.format_exc())
+        raise

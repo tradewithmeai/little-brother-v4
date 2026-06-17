@@ -10,10 +10,12 @@ API:   http://localhost:5001
 
 import json
 import logging
+import os
 import signal
 import subprocess
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,8 +98,11 @@ class ProcessSupervisor:
         self._start_time: float | None = None
         self._action_lock = threading.Lock()
         self._last_health_check_ms: int | None = None
-
-        self._discover_existing_process(startup_window=self._startup_window)
+        # Set once the (potentially slow) discovery phase has finished. Until then
+        # get_status() reports "starting" so the tray shows yellow — never grey/red.
+        # Discovery is NO LONGER done in __init__; it runs in start_background() so
+        # the control HTTP server can bind its port immediately.
+        self._discovery_done = threading.Event()
 
     # ------------------------------------------------------------------
     # Discovery
@@ -212,6 +217,16 @@ class ProcessSupervisor:
     # ------------------------------------------------------------------
 
     def get_status(self) -> StatusResult:
+        # Before discovery completes, report "starting" (tray shows yellow) rather
+        # than a misleading "failed"/"stopped" that would look like a dead app.
+        if not self._discovery_done.is_set():
+            return StatusResult(
+                process_state="starting",
+                api_reachable=False,
+                status="starting",
+                last_health_check_utc_ms=self._last_health_check_ms,
+                detail={"discovered": False, "phase": "discovering"},
+            )
         proc_state = self._process_state()
         api_ok = self._api_reachable() if proc_state == "running" else False
         return StatusResult(
@@ -240,6 +255,69 @@ class ProcessSupervisor:
         log.info("Health check: process_state=%s api_reachable=%s status=%s",
                  result.process_state, result.api_reachable, result.status)
         return result
+
+    def start_background(self, auto_start: bool, restart_interval: int = 30) -> None:
+        """Run discovery, optional auto-start, and crash-recovery in a daemon thread.
+
+        This used to run inline (discovery in __init__, auto-start + recovery in
+        run()) BEFORE the control server bound its port — so the watchdog was
+        unreachable for 30-45s on every boot and any exception in that window
+        killed it silently. Doing it here lets run() bind the port first.
+        """
+        def _bg():
+            # Phase 1: discover an already-running app (was previously in __init__)
+            try:
+                self._discover_existing_process(startup_window=self._startup_window)
+            except Exception:
+                log.error("Discovery phase raised:\n%s", traceback.format_exc())
+            finally:
+                self._discovery_done.set()
+                log.info("Discovery phase complete (discovered=%s)", self._discovered)
+
+            # Phase 2: optional auto-start (single-owner mode keeps this off)
+            if auto_start:
+                try:
+                    if self._process_state() != "running":
+                        log.info("auto_start_app=true — starting little-brother")
+                        self.start()
+                except Exception:
+                    log.error("auto_start raised:\n%s", traceback.format_exc())
+
+            # Phase 3: crash-recovery loop with hysteresis + circuit breaker.
+            # Requires several consecutive failures before restarting, so a
+            # transient blip (or the pythonw re-exec shim exiting) never triggers
+            # the restart storms seen previously.
+            consecutive_failed = 0
+            restarts = 0
+            max_restarts = 10
+            log.info("Recovery loop started (check every %ss)", restart_interval)
+            while True:
+                time.sleep(restart_interval)
+                try:
+                    s = self.get_status()
+                    if s.status == "failed":
+                        consecutive_failed += 1
+                        log.warning("little-brother appears down (%s/3 consecutive)",
+                                    consecutive_failed)
+                        if consecutive_failed >= 3:
+                            if restarts >= max_restarts:
+                                log.error("Restart circuit breaker tripped (%s restarts) "
+                                          "— leaving it down", restarts)
+                                consecutive_failed = 0
+                                continue
+                            log.warning("Restarting little-brother after %s consecutive failures",
+                                        consecutive_failed)
+                            result = self.start()
+                            restarts += 1
+                            log.info("Recovery restart result: %s (%s)",
+                                     result.status, result.message)
+                            consecutive_failed = 0
+                    else:
+                        consecutive_failed = 0
+                except Exception:
+                    log.error("Recovery loop error:\n%s", traceback.format_exc())
+
+        threading.Thread(target=_bg, daemon=True, name="supervisor-bg").start()
 
     def start(self) -> ActionResult:
         if not self._action_lock.acquire(blocking=False):
@@ -543,33 +621,35 @@ def run(config_path: str | None = None):
         startup_window=startup_window,
     )
 
-    if auto_start and supervisor.get_status().process_state != "running":
-        log.info("auto_start_app=true — starting little-brother")
-        supervisor.start()
-
-    # Background crash-recovery loop
+    # Bind the control server FIRST, then do the slow discovery / auto-start /
+    # crash-recovery work in a background thread. Previously discovery (up to 30s)
+    # and auto-start (up to 15s) ran before the bind, so port 5001 was dead for
+    # 30-45s on every boot — and any exception in that window killed the watchdog
+    # silently before it ever bound, leaving the tray grey forever.
     restart_interval = int(wdog.get("restart_check_interval_seconds", 30))
-
-    def _recovery_loop():
-        log.info("Recovery loop started (check every %ss)", restart_interval)
-        while True:
-            time.sleep(restart_interval)
-            try:
-                s = supervisor.get_status()
-                if s.status == "failed":
-                    log.warning("little-brother is down — attempting restart")
-                    result = supervisor.start()
-                    log.info("Recovery restart result: %s (%s)", result.status, result.message)
-            except Exception as exc:
-                log.error("Recovery loop error: %s", exc)
-
-    t = threading.Thread(target=_recovery_loop, daemon=True, name="recovery")
-    t.start()
+    supervisor.start_background(auto_start=auto_start, restart_interval=restart_interval)
 
     flask_app = create_app(supervisor)
-    log.info("Watchdog listening on port %s", port)
-    flask_app.run(host="127.0.0.1", port=port, threaded=True)
+    log.info("Watchdog binding control server on port %s", port)
+    try:
+        flask_app.run(host="127.0.0.1", port=port, threaded=True, use_reloader=False)
+    except Exception:
+        log.error("Watchdog control server failed on port %s:\n%s", port, traceback.format_exc())
+        raise
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        run()
+    except Exception:
+        # pythonw discards stderr — guarantee the traceback lands on disk.
+        try:
+            _crash = ROOT / "little_brother" / "logs" / "crash.log"
+            _crash.parent.mkdir(parents=True, exist_ok=True)
+            with open(_crash, "a", encoding="utf-8") as _f:
+                import datetime as _dt
+                _f.write(f"{_dt.datetime.now().isoformat()} [watchdog pid {os.getpid()}]\n"
+                         f"{traceback.format_exc()}\n")
+        except Exception:
+            pass
+        raise

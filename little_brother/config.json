@@ -19,7 +19,7 @@
     "start_timeout_seconds": 15,
     "stop_timeout_seconds": 10,
     "restart_timeout_seconds": 30,
-    "auto_start_app": true
+    "auto_start_app": false
   },
   "betty": {
     "enabled": false,

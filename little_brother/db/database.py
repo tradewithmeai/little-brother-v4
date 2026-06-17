@@ -30,12 +30,18 @@ class Database:
         self._dropped_events = 0
         self._queue_cap = 500
         self.running = True
+        # Bound the WAL: checkpoint+truncate from the writer thread every N commits
+        # so it never balloons (it had reached 403MB) and clean shutdown stays fast.
+        self._commits_since_checkpoint = 0
+        self._checkpoint_every = 200
 
         # Create database connection
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.execute("PRAGMA wal_autocheckpoint=1000")
 
         # Load schema
         self.load_schema()
@@ -229,6 +235,17 @@ class Database:
                 for _ in batch:
                     self.event_queue.task_done()
 
+                # Periodically truncate the WAL from the writer (the lock holder)
+                # so PASSIVE autocheckpoint starvation under continuous readers
+                # cannot let the WAL grow unbounded.
+                self._commits_since_checkpoint += 1
+                if self._commits_since_checkpoint >= self._checkpoint_every:
+                    self._commits_since_checkpoint = 0
+                    try:
+                        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception as e:
+                        print(f"WAL checkpoint failed: {e}")
+
             except Exception as e:
                 print(f"Error in writer loop: {e}")
 
@@ -243,6 +260,13 @@ class Database:
             self.writer_thread.join(timeout=2.0)
         except Exception:
             pass
+
+        # Checkpoint+truncate the WAL on clean shutdown so it doesn't survive
+        # huge across a reboot (and so the next open is trivial).
+        try:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as e:
+            print(f"WAL checkpoint on shutdown failed: {e}")
 
         self.conn.close()
         remaining = self.event_queue.qsize()

@@ -14,6 +14,7 @@ from .monitors.keyboard import KeyboardMonitor
 from .events import EventBus
 from .dashboard.server import DashboardServer
 from .betty import BettySentinel
+from .bootlog import boot_log
 
 
 class LittleBrother:
@@ -41,6 +42,7 @@ class LittleBrother:
     def start(self):
         """Start all monitors and the database."""
         print("[LB] Starting Little Brother monitoring system...")
+        boot_log("main.start() entry")
 
         # Load configuration
         self.config = self.load_config()
@@ -51,7 +53,9 @@ class LittleBrother:
         self.event_bus = EventBus()
 
         # Initialize database
+        boot_log("db_open_start")
         self.db = Database(event_bus=self.event_bus)
+        boot_log("db_open_done")
         print("[LB] Database initialized")
 
         # Initialize monitors
@@ -81,6 +85,7 @@ class LittleBrother:
         # Start dashboard + API
         self.dashboard = DashboardServer(config, orchestrator=self, event_bus=self.event_bus)
         self.dashboard.start()
+        boot_log(f"dashboard_bound port {config.get('dashboard_port', 5000)}")
 
         # Register configured webhooks
         self._register_webhooks()
@@ -91,6 +96,7 @@ class LittleBrother:
         # Start Betty Sentinel telemetry
         self.betty.start(self)
 
+        boot_log("app fully started")
         print("[LB] Monitors started. Press Ctrl+C to stop.")
 
     def stop(self):
