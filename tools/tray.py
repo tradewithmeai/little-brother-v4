@@ -8,8 +8,11 @@ All control actions route through the watchdog, never directly to LB.
 Start: pythonw tools/tray.py
 """
 
+import os
+import sys
 import threading
 import time
+import traceback
 import webbrowser
 import winreg
 from datetime import datetime
@@ -20,11 +23,22 @@ import requests
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
+_LOG_DIR = ROOT / "little_brother" / "logs"
 WATCHDOG_URL = "http://localhost:5001"
 DASHBOARD_URL = "http://localhost:5000"
 POLL_INTERVAL = 30
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "LittleBrother"
+
+
+def _tray_log(msg):
+    try:
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        line = f"{datetime.now().isoformat()} [pid {os.getpid()}] {msg}\n"
+        with open(_LOG_DIR / "tray.log", "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -212,25 +226,32 @@ def _poll_watchdog(state: TrayState):
 
 
 def _poll_loop(state: TrayState, icon: pystray.Icon):
-    # Watchdog blocks on startup discovery (up to 30s) before its Flask server
-    # is ready. Poll fast here so the icon turns green as soon as it's up.
+    _tray_log("poll_loop started")
+    # Fast-poll until watchdog first responds (it may not be ready yet at startup).
     deadline = time.time() + STARTUP_TIMEOUT
     while time.time() < deadline:
-        if _poll_watchdog(state):
+        try:
+            if _poll_watchdog(state):
+                icon.icon = state.icon_image()
+                icon.title = state.tooltip()
+                icon.menu = _build_menu(state, icon)
+                _tray_log(f"watchdog up (startup) status={state.status}")
+                break
+            icon.icon = state.icon_image()
+            icon.menu = _build_menu(state, icon)
+        except Exception:
+            _tray_log("exception in startup poll:\n" + traceback.format_exc())
+        time.sleep(STARTUP_POLL_INTERVAL)
+
+    # Steady-state: poll every 30s — wrapped so one bad poll can't kill the thread.
+    while True:
+        try:
+            _poll_watchdog(state)
             icon.icon = state.icon_image()
             icon.title = state.tooltip()
             icon.menu = _build_menu(state, icon)
-            break
-        icon.icon = state.icon_image()
-        icon.menu = _build_menu(state, icon)
-        time.sleep(STARTUP_POLL_INTERVAL)
-
-    # Steady-state: poll every 30s
-    while True:
-        _poll_watchdog(state)
-        icon.icon = state.icon_image()
-        icon.title = state.tooltip()
-        icon.menu = _build_menu(state, icon)
+        except Exception:
+            _tray_log("exception in steady poll:\n" + traceback.format_exc())
         time.sleep(POLL_INTERVAL)
 
 
@@ -259,4 +280,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    _tray_log("tray process launched")
+    try:
+        main()
+    except Exception:
+        _tray_log("FATAL in tray main():\n" + traceback.format_exc())
+        sys.exit(1)

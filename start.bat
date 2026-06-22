@@ -1,13 +1,10 @@
 @echo off
 cd /d "%~dp0"
 
-REM Kill any stale LB processes from a previous session before starting fresh.
-REM This prevents the single-instance lock (port 47923) from blocking startup
-REM after an unclean shutdown or desktop restart.
-for /f "tokens=2" %%p in ('tasklist /fi "imagename eq pythonw.exe" /fo csv /nh 2^>nul') do (
-    wmic process where "ProcessId=%%~p" get ExecutablePath 2>nul | findstr /i "little-brother" >nul 2>&1
-    if not errorlevel 1 taskkill /pid %%~p /f >nul 2>&1
-)
+REM Kill any stale LB processes regardless of which Python interpreter they use.
+REM The old filter (ExecutablePath containing "little-brother") missed processes
+REM launched by the system Python, which held ports 47923/5001 and blocked venv ones.
+powershell -NoProfile -Command "Get-WmiObject Win32_Process -Filter 'Name = ''pythonw.exe''' | Where-Object { $_.CommandLine -match 'little_brother|watchdog\.py|tray\.py|tunnel_keeper\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 REM Record that start.bat actually ran and when (boot-time evidence).
 echo [%date% %time%] start.bat launching LB: app, watchdog, tray, tunnel >> little_brother\logs\boot.log
