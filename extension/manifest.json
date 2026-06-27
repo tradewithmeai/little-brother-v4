@@ -1,11 +1,12 @@
 {
   "manifest_version": 2,
   "name": "Little Brother",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Sends tab activity to Little Brother activity monitor on localhost.",
 
   "permissions": [
     "tabs",
+    "windows",
     "http://localhost/",
     "http://127.0.0.1/"
   ],

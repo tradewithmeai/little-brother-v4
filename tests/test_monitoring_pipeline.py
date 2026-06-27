@@ -282,5 +282,159 @@ class TestKeyboardStartContext(unittest.TestCase):
         mon.db.log_key_event.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# Firefox dwell HTTP ingest path
+# ---------------------------------------------------------------------------
+
+class TestFirefoxDwellHTTPPath(unittest.TestCase):
+    """Verify Firefox extension dwell events arrive via /api/browser-tab and
+    flow through to the top_tabs_by_dwell digest query."""
+
+    def setUp(self):
+        import tempfile
+        from unittest.mock import patch
+        from little_brother.dashboard import server as srv
+
+        # Build a fresh DB with the full migrated schema
+        self._tmp_db_path = tempfile.mktemp(suffix=".db")
+        from little_brother.db.database import Database
+        _db = Database(self._tmp_db_path)
+        _db.stop()
+
+        # Patch _write_db so the Flask endpoint writes to our temp DB
+        def _fake_write_db():
+            conn = sqlite3.connect(self._tmp_db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            return conn
+
+        self._patcher = patch.object(srv, "_write_db", _fake_write_db)
+        self._patcher.start()
+
+        self._app = srv.app
+        self._app.config["TESTING"] = True
+        self._client = self._app.test_client()
+
+    def tearDown(self):
+        self._patcher.stop()
+        try:
+            import os
+            os.unlink(self._tmp_db_path)
+        except OSError:
+            pass
+
+    def _post_tab(self, payload):
+        return self._client.post(
+            "/api/browser-tab",
+            json=payload,
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+
+    def test_dwell_event_accepted_and_stored(self):
+        resp = self._post_tab({
+            "event_type": "dwell",
+            "title": "GitHub",
+            "url": "https://github.com",
+            "tab_id": "101",
+            "duration_ms": 8000,
+            "is_foreground": 1,
+        })
+        self.assertEqual(resp.status_code, 201)
+
+        conn = sqlite3.connect(self._tmp_db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT browser, event_type, duration_ms, is_foreground "
+            "FROM browser_tab_events WHERE url = ?",
+            ("https://github.com",),
+        ).fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["browser"], "firefox")
+        self.assertEqual(row["event_type"], "dwell")
+        self.assertEqual(row["duration_ms"], 8000)
+        self.assertEqual(row["is_foreground"], 1)
+
+    def test_dwell_without_duration_stored_as_null(self):
+        resp = self._post_tab({
+            "event_type": "dwell",
+            "title": "MDN",
+            "url": "https://developer.mozilla.org",
+            "tab_id": "102",
+        })
+        self.assertEqual(resp.status_code, 201)
+
+        conn = sqlite3.connect(self._tmp_db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT duration_ms FROM browser_tab_events WHERE url = ?",
+            ("https://developer.mozilla.org",),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertIsNone(row["duration_ms"])
+
+    def test_non_dwell_events_stored_correctly(self):
+        for et in ("activated", "navigated", "created", "closed"):
+            resp = self._post_tab({
+                "event_type": et,
+                "title": f"Tab {et}",
+                "url": f"https://example.com/{et}",
+                "tab_id": "200",
+                "is_foreground": 1 if et == "activated" else 0,
+            })
+            self.assertEqual(resp.status_code, 201, f"expected 201 for event_type={et}")
+
+    def test_missing_event_type_returns_400(self):
+        resp = self._post_tab({"title": "Bad", "url": "https://example.com"})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_top_tabs_by_dwell_includes_firefox_events(self):
+        """The digest SQL query returns Firefox dwell rows alongside Chrome ones."""
+        # Insert one Firefox dwell and one Chrome dwell directly
+        conn = sqlite3.connect(self._tmp_db_path)
+        ts = "2026-01-01T10:00:00"
+        conn.execute(
+            "INSERT INTO browser_tab_events (timestamp, browser, event_type, title, url, duration_ms) "
+            "VALUES (?, 'firefox', 'dwell', 'Firefox Tab', 'https://firefox.example', 15000)",
+            (ts,),
+        )
+        conn.execute(
+            "INSERT INTO browser_tab_events (timestamp, browser, event_type, title, url, duration_ms) "
+            "VALUES (?, 'chrome', 'dwell', 'Chrome Tab', 'https://chrome.example', 7000)",
+            (ts,),
+        )
+        conn.commit()
+        conn.close()
+
+        conn = sqlite3.connect(self._tmp_db_path)
+        conn.row_factory = sqlite3.Row
+        since = "2026-01-01T00:00:00"
+        rows = conn.execute("""
+            SELECT url, title, COUNT(*) as visits, SUM(duration_ms) as total_dwell_ms
+            FROM browser_tab_events
+            WHERE event_type = 'dwell' AND timestamp >= ?
+            GROUP BY url
+            ORDER BY total_dwell_ms DESC LIMIT 15
+        """, (since,)).fetchall()
+        conn.close()
+
+        urls = [r["url"] for r in rows]
+        self.assertIn("https://firefox.example", urls)
+        self.assertIn("https://chrome.example", urls)
+        # Firefox dwell should rank first (15s > 7s)
+        self.assertEqual(rows[0]["url"], "https://firefox.example")
+        self.assertEqual(rows[0]["total_dwell_ms"], 15000)
+
+    def test_remote_addr_restriction(self):
+        """Requests from non-localhost IPs are rejected with 403."""
+        resp = self._client.post(
+            "/api/browser-tab",
+            json={"event_type": "dwell", "title": "X", "url": "https://x.com", "duration_ms": 1000},
+            environ_base={"REMOTE_ADDR": "10.0.0.1"},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

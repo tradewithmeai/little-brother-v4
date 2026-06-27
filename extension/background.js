@@ -5,8 +5,10 @@ const LB_URL = "http://127.0.0.1:5000/api/browser-tab";
 // Dedupe rapid-fire navigations: only send after tab has been stable for 500ms
 const pendingUpdates = {};
 
-// Track the currently foregrounded tab for dwell-time calculations
+// Track the currently foregrounded tab for dwell-time calculations.
 // Shape: { tabId, url, title, activatedAt }
+// activatedAt is reset to Date.now() whenever Firefox regains OS focus,
+// so dwell time only measures actual focused intervals.
 let activeTab = null;
 
 function send(payload) {
@@ -45,9 +47,11 @@ function sendDwell(tab, endTime) {
 browser.tabs.onActivated.addListener(({ tabId }) => {
   const now = Date.now();
 
-  // Close out dwell for the tab that just lost focus
+  // Close out dwell for the tab that just lost focus.
+  // Null activeTab immediately so a second rapid onActivated can't double-count.
   if (activeTab) {
     sendDwell(activeTab, now);
+    activeTab = null;
   }
 
   browser.tabs.get(tabId).then((tab) => {
@@ -65,6 +69,26 @@ browser.tabs.onActivated.addListener(({ tabId }) => {
       is_foreground: 1,
     });
   }).catch(() => { activeTab = null; });
+});
+
+// Firefox window gained or lost OS focus.
+// When Firefox loses focus (WINDOW_ID_NONE), flush a dwell event for the current
+// foreground tab and reset activatedAt — so dwell only accumulates when the user is
+// actually inside Firefox, not while they are working in another app.
+browser.windows.onFocusChanged.addListener((windowId) => {
+  const now = Date.now();
+  if (windowId === browser.windows.WINDOW_ID_NONE) {
+    // Firefox lost OS focus — flush dwell and pause the clock
+    if (activeTab) {
+      sendDwell(activeTab, now);
+      activeTab = { ...activeTab, activatedAt: now };
+    }
+  } else {
+    // Firefox regained OS focus — restart the dwell clock from now
+    if (activeTab) {
+      activeTab = { ...activeTab, activatedAt: now };
+    }
+  }
 });
 
 // Tab navigated to a new URL
