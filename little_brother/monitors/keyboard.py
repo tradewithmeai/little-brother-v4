@@ -64,6 +64,8 @@ class KeyboardMonitor:
         self._paste_detected = False
         self._delete_count = 0
         self._printable_count = 0
+        # Context captured at first keypress of each chunk (more accurate than at flush time)
+        self._buffer_start_context = None  # (window_title, process_name) or None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -113,6 +115,10 @@ class KeyboardMonitor:
             from pynput.keyboard import Key
             with self._lock:
                 self._last_key_time = time.monotonic()
+
+                # Capture context on first key of a new chunk (before appending)
+                if not self._buffer and self._buffer_start_context is None:
+                    threading.Thread(target=self._capture_start_context, daemon=True).start()
 
                 # Printable character
                 if hasattr(key, "char") and key.char is not None:
@@ -180,6 +186,10 @@ class KeyboardMonitor:
         self._buffer.clear()
         self._last_key_time = None
 
+        # Grab start-of-chunk context and reset for next chunk
+        captured_context = self._buffer_start_context
+        self._buffer_start_context = None
+
         # Determine input method from tracked counts
         paste = self._paste_detected
         deletes = self._delete_count
@@ -198,11 +208,19 @@ class KeyboardMonitor:
         # Fire the write outside the lock to avoid deadlock on DB operations
         threading.Thread(
             target=self._write_chunk,
-            args=(text_chunk, key_count, input_method),
+            args=(text_chunk, key_count, input_method, captured_context),
             daemon=True,
         ).start()
 
-    def _write_chunk(self, text_chunk, key_count, input_method="typed"):
+    def _capture_start_context(self):
+        """Called in a daemon thread at first keypress to capture the foreground window."""
+        ctx = self._get_foreground_info()
+        with self._lock:
+            # Only store if the buffer hasn't been flushed already
+            if self._buffer_start_context is None and self._buffer:
+                self._buffer_start_context = ctx
+
+    def _write_chunk(self, text_chunk, key_count, input_method="typed", captured_context=None):
         try:
             # Deduplicate: drop if identical to the last written chunk
             # (catches two-instance race where both write the same buffer)
@@ -213,7 +231,11 @@ class KeyboardMonitor:
                 self._last_chunk_sig = sig
 
             timestamp = datetime.datetime.utcnow().isoformat()
-            window_title, process_name = self._get_foreground_info()
+            # Use context captured at first keypress; fall back to current foreground
+            if captured_context:
+                window_title, process_name = captured_context
+            else:
+                window_title, process_name = self._get_foreground_info()
             suppressed = self._is_suppressed(window_title, process_name)
 
             self.db.log_key_event(

@@ -1,6 +1,7 @@
 import threading
 import datetime
 import json
+import time
 import urllib.request
 import urllib.error
 
@@ -19,6 +20,7 @@ class BrowserTabMonitor:
         self._stop_event = threading.Event()
         self._thread = None
         self._last_tabs = {}  # id -> {title, url}
+        self._tab_first_seen = {}  # id -> monotonic timestamp when tab was first seen
         self._poll_interval = 2.0
         self._connected = False
 
@@ -75,9 +77,11 @@ class BrowserTabMonitor:
             }
 
         timestamp = datetime.datetime.utcnow().isoformat()
+        now = time.monotonic()
 
         for tab_id, info in current_tabs.items():
             if tab_id not in self._last_tabs:
+                self._tab_first_seen[tab_id] = now
                 self.db.log_browser_tab(
                     timestamp=timestamp, browser="chrome",
                     event_type="created", title=info["title"], url=info["url"],
@@ -85,6 +89,14 @@ class BrowserTabMonitor:
 
         for tab_id, info in self._last_tabs.items():
             if tab_id not in current_tabs:
+                # Emit a dwell event so the digest can compute time-in-tab
+                first_seen = self._tab_first_seen.pop(tab_id, None)
+                duration_ms = int((now - first_seen) * 1000) if first_seen is not None else None
+                self.db.log_browser_tab(
+                    timestamp=timestamp, browser="chrome",
+                    event_type="dwell", title=info["title"], url=info["url"],
+                    duration_ms=duration_ms,
+                )
                 self.db.log_browser_tab(
                     timestamp=timestamp, browser="chrome",
                     event_type="removed", title=info["title"], url=info["url"],

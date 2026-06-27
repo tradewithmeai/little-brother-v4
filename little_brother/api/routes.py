@@ -455,7 +455,6 @@ def create_api_blueprint(orchestrator, event_bus):
             # Summary counts
             counts = {}
             for key, table, col in [
-                ("window_switches", "active_window_events", "COUNT(*)"),
                 ("mouse_clicks",    "mouse_click_events",   "COUNT(*)"),
                 ("file_events",     "file_events",          "COUNT(*)"),
                 ("browser_tab_events", "browser_tab_events", "COUNT(*)"),
@@ -466,13 +465,41 @@ def create_api_blueprint(orchestrator, event_bus):
                     f"SELECT {col} as v FROM {table} WHERE timestamp >= ?", (since,)
                 ).fetchone()
                 counts[key] = row["v"] or 0
+            # Exclude heartbeats from switch count so it reflects actual focus changes
+            sw_row = conn.execute(
+                "SELECT COUNT(*) as v FROM active_window_events "
+                "WHERE timestamp >= ? AND (is_heartbeat = 0 OR is_heartbeat IS NULL)",
+                (since,)
+            ).fetchone()
+            counts["window_switches"] = sw_row["v"] or 0
 
-            # Top applications
+            # Top applications by switch count (real focus changes only)
             top_apps = conn.execute("""
                 SELECT process_name, COUNT(*) as switches
                 FROM active_window_events
                 WHERE timestamp >= ? AND process_name != ''
+                  AND (is_heartbeat = 0 OR is_heartbeat IS NULL)
                 GROUP BY process_name ORDER BY switches DESC LIMIT 10
+            """, (since,)).fetchall()
+
+            # Top applications by actual dwell time (gap between consecutive events)
+            top_apps_dwell = conn.execute("""
+                SELECT process_name,
+                       SUM(gap_ms) as total_focus_ms
+                FROM (
+                    SELECT process_name,
+                           CAST(
+                               (julianday(LEAD(timestamp) OVER (ORDER BY timestamp))
+                                - julianday(timestamp)) * 86400000
+                           AS INTEGER) as gap_ms
+                    FROM active_window_events
+                    WHERE timestamp >= ?
+                      AND (is_heartbeat = 0 OR is_heartbeat IS NULL)
+                      AND process_name != ''
+                )
+                WHERE gap_ms IS NOT NULL AND gap_ms > 0 AND gap_ms < 3600000
+                GROUP BY process_name
+                ORDER BY total_focus_ms DESC LIMIT 10
             """, (since,)).fetchall()
 
             # Keystroke contexts (top windows by keys typed)
@@ -720,6 +747,10 @@ def create_api_blueprint(orchestrator, event_bus):
                 "top_applications": [
                     {"process": r["process_name"], "switches": r["switches"]}
                     for r in top_apps
+                ],
+                "top_applications_by_dwell": [
+                    {"process": r["process_name"], "total_focus_ms": r["total_focus_ms"]}
+                    for r in top_apps_dwell
                 ],
                 "keystroke_contexts": [
                     {"window": r["window_title"], "process": r["process_name"], "keys": r["keys"]}

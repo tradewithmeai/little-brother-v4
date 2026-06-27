@@ -143,6 +143,16 @@ class Database:
             )
             print("[DB] Migrated: added process_name column to mouse_click_events")
 
+        existing_aw = {
+            row[1]
+            for row in cursor.execute("PRAGMA table_info(active_window_events)").fetchall()
+        }
+        if "is_heartbeat" not in existing_aw:
+            cursor.execute(
+                "ALTER TABLE active_window_events ADD COLUMN is_heartbeat INTEGER DEFAULT 0"
+            )
+            print("[DB] Migrated: added is_heartbeat column to active_window_events")
+
         # Performance indexes — safe to run repeatedly via IF NOT EXISTS
         cursor.executescript("""
             CREATE INDEX IF NOT EXISTS idx_file_events_ts        ON file_events(timestamp);
@@ -277,22 +287,14 @@ class Database:
 
     # Insert wrapper methods
 
-    def log_active_window(self, timestamp, window_title, process_name, process_path, hwnd):
-        """Log an active window event.
-
-        Args:
-            timestamp: ISO format timestamp string
-            window_title: Title of the active window
-            process_name: Name of the process
-            process_path: Full path to the process executable
-            hwnd: Windows handle identifier
-        """
+    def log_active_window(self, timestamp, window_title, process_name, process_path, hwnd, is_heartbeat=0):
         self.write_event("active_window_events", {
             "timestamp": timestamp,
             "window_title": window_title,
             "process_name": process_name,
             "process_path": process_path,
-            "hwnd": hwnd
+            "hwnd": hwnd,
+            "is_heartbeat": is_heartbeat,
         })
 
     def log_mouse_click(self, timestamp, button, x, y, window_title, process_name=None):
@@ -305,23 +307,17 @@ class Database:
             "process_name": process_name,
         })
 
-    def log_browser_tab(self, timestamp, browser, event_type, title, url):
-        """Log a browser tab event.
-
-        Args:
-            timestamp: ISO format timestamp string
-            browser: Browser name (e.g., 'chrome', 'firefox')
-            event_type: Type of event ('created', 'updated', 'activated', 'removed')
-            title: Page title
-            url: Page URL
-        """
-        self.write_event("browser_tab_events", {
+    def log_browser_tab(self, timestamp, browser, event_type, title, url, duration_ms=None):
+        row = {
             "timestamp": timestamp,
             "browser": browser,
             "event_type": event_type,
             "title": title,
-            "url": url
-        })
+            "url": url,
+        }
+        if duration_ms is not None:
+            row["duration_ms"] = duration_ms
+        self.write_event("browser_tab_events", row)
 
     def log_key_event(self, timestamp, window_title, process_name, text_chunk, key_count, suppressed=0, input_method=None):
         self.write_event("key_events", {

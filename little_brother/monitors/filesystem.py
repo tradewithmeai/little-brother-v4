@@ -76,6 +76,13 @@ _EXCLUDED_EXTENSIONS = {
     ".log", ".tmp", ".temp", ".bak",
     ".pyc", ".pyo",
     ".parquet", ".arrow", ".zst", ".gz", ".bz2",  # data pipeline output files
+    ".crdownload", ".part",  # partial browser downloads
+}
+
+# Exact filenames (lowercase) that are Windows/Office noise
+_EXCLUDED_FILENAMES = {
+    "thumbs.db",    # Windows thumbnail cache
+    "desktop.ini",  # Windows folder metadata
 }
 
 # Directory names that are never worth recording
@@ -228,6 +235,13 @@ class FileSystemMonitor:
         p = Path(path)
         # Ignore excluded extensions
         if p.suffix.lower() in _EXCLUDED_EXTENSIONS:
+            return True
+        name_lower = p.name.lower()
+        # Ignore Windows/Office noise by exact filename
+        if name_lower in _EXCLUDED_FILENAMES:
+            return True
+        # Ignore Office lock files (~$filename.docx etc.)
+        if name_lower.startswith("~$"):
             return True
         # Ignore excluded directory names anywhere in the path
         if any(part in _EXCLUDED_DIR_NAMES for part in p.parts):

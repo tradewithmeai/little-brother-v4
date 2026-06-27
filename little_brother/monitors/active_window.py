@@ -2,6 +2,7 @@ import ctypes
 import ctypes.wintypes
 import threading
 import datetime
+import time
 
 
 # Win32 API setup
@@ -28,6 +29,10 @@ GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# Emit a heartbeat row for the same window every N seconds so the digest knows
+# the user has been continuously in that window (rather than "last seen X hours ago").
+_HEARTBEAT_INTERVAL = 300  # 5 minutes
+
 
 class ActiveWindowMonitor:
     """Monitor active window changes by polling."""
@@ -40,6 +45,7 @@ class ActiveWindowMonitor:
         self._thread = None
         self._last_hwnd = None
         self._last_title = None
+        self._last_log_time = None  # monotonic time of last DB write for current HWND
 
     @property
     def is_running(self):
@@ -79,8 +85,23 @@ class ActiveWindowMonitor:
             GetWindowTextW(hwnd, buf, title_len + 1)
             title = buf.value or ""
 
-        # Deduplicate — only log when the window handle changes
+        now = time.monotonic()
+
+        # Heartbeat: same window held focus for another _HEARTBEAT_INTERVAL seconds
         if hwnd == self._last_hwnd:
+            if self._last_log_time is not None and now - self._last_log_time >= _HEARTBEAT_INTERVAL:
+                pid = ctypes.wintypes.DWORD()
+                GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                process_name, process_path = self._get_process_info(pid.value)
+                self.db.log_active_window(
+                    timestamp=datetime.datetime.utcnow().isoformat(),
+                    window_title=title,
+                    process_name=process_name,
+                    process_path=process_path,
+                    hwnd=int(hwnd),
+                    is_heartbeat=1,
+                )
+                self._last_log_time = now
             return
 
         self._last_hwnd = hwnd
@@ -99,7 +120,9 @@ class ActiveWindowMonitor:
             process_name=process_name,
             process_path=process_path,
             hwnd=int(hwnd),
+            is_heartbeat=0,
         )
+        self._last_log_time = now
 
     def _get_process_info(self, pid):
         """Get process name and path using Win32 API."""
