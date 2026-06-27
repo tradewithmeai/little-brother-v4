@@ -24,8 +24,8 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 _LOG_DIR = ROOT / "little_brother" / "logs"
-WATCHDOG_URL = "http://localhost:5001"
-DASHBOARD_URL = "http://localhost:5000"
+WATCHDOG_URL = "http://127.0.0.1:5001"
+DASHBOARD_URL = "http://127.0.0.1:5000"
 POLL_INTERVAL = 30
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "LittleBrother"
@@ -154,7 +154,7 @@ def _set_autostart(enable: bool):
 # Menu builder
 # ---------------------------------------------------------------------------
 
-def _build_menu(state: TrayState, icon: pystray.Icon):
+def _build_menu(state: TrayState, icon: pystray.Icon, stop_event: threading.Event = None):
 
     def _label(text):
         return pystray.MenuItem(text, None, enabled=False)
@@ -169,6 +169,8 @@ def _build_menu(state: TrayState, icon: pystray.Icon):
         _set_autostart(not _is_autostart_enabled())
 
     def quit_tray(_icon, _item):
+        if stop_event is not None:
+            stop_event.set()
         _icon.stop()
 
     # Status lines
@@ -225,34 +227,34 @@ def _poll_watchdog(state: TrayState):
     return False
 
 
-def _poll_loop(state: TrayState, icon: pystray.Icon):
+def _poll_loop(state: TrayState, icon: pystray.Icon, stop_event: threading.Event):
     _tray_log("poll_loop started")
     # Fast-poll until watchdog first responds (it may not be ready yet at startup).
     deadline = time.time() + STARTUP_TIMEOUT
-    while time.time() < deadline:
+    while time.time() < deadline and not stop_event.is_set():
         try:
             if _poll_watchdog(state):
                 icon.icon = state.icon_image()
                 icon.title = state.tooltip()
-                icon.menu = _build_menu(state, icon)
+                icon.menu = _build_menu(state, icon, stop_event)
                 _tray_log(f"watchdog up (startup) status={state.status}")
                 break
             icon.icon = state.icon_image()
-            icon.menu = _build_menu(state, icon)
+            icon.menu = _build_menu(state, icon, stop_event)
         except Exception:
             _tray_log("exception in startup poll:\n" + traceback.format_exc())
-        time.sleep(STARTUP_POLL_INTERVAL)
+        stop_event.wait(STARTUP_POLL_INTERVAL)
 
-    # Steady-state: poll every 30s — wrapped so one bad poll can't kill the thread.
-    while True:
+    # Steady-state: poll every 30s — interruptible so quit_tray exits cleanly.
+    while not stop_event.is_set():
         try:
             _poll_watchdog(state)
             icon.icon = state.icon_image()
             icon.title = state.tooltip()
-            icon.menu = _build_menu(state, icon)
+            icon.menu = _build_menu(state, icon, stop_event)
         except Exception:
             _tray_log("exception in steady poll:\n" + traceback.format_exc())
-        time.sleep(POLL_INTERVAL)
+        stop_event.wait(POLL_INTERVAL)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +263,7 @@ def _poll_loop(state: TrayState, icon: pystray.Icon):
 
 def main():
     state = TrayState()
+    stop_event = threading.Event()
 
     icon = pystray.Icon(
         name="little-brother",
@@ -271,12 +274,14 @@ def main():
         ),
     )
 
-    poll_thread = threading.Thread(
-        target=_poll_loop, args=(state, icon), daemon=True
-    )
-    poll_thread.start()
+    def setup(icon):
+        # Must set visible=True before polling so the icon exists in the tray.
+        icon.visible = True
+        # Run the poll loop in pystray's own setup thread — icon.icon updates
+        # from this thread are reliable on Windows; a separate daemon thread is not.
+        _poll_loop(state, icon, stop_event)
 
-    icon.run()
+    icon.run(setup=setup)
 
 
 if __name__ == "__main__":

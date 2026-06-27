@@ -30,7 +30,7 @@ log = logging.getLogger("betty_agent")
 
 ROOT = Path(__file__).resolve().parent.parent
 SEQ_FILE = ROOT / "data" / "reports" / "betty_seq.json"
-LB_API = "http://localhost:5000"
+LB_API = "http://127.0.0.1:5000"
 STALE_MINUTES = 10
 LOOP_INTERVAL = 60
 

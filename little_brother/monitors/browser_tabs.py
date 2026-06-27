@@ -52,7 +52,7 @@ class BrowserTabMonitor:
 
     def _poll(self):
         """Poll Chrome DevTools Protocol HTTP endpoint for open tabs."""
-        url = f"http://localhost:{self.debug_port}/json"
+        url = f"http://127.0.0.1:{self.debug_port}/json"
         try:
             with urllib.request.urlopen(url, timeout=2) as resp:
                 data = json.loads(resp.read().decode())

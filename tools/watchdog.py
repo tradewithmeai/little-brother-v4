@@ -609,7 +609,7 @@ def run(config_path: str | None = None):
 
     # Resolve command relative to project root
     cmd = [str(ROOT / start_cmd[0])] + start_cmd[1:]
-    app_url = f"http://localhost:{app_port}"
+    app_url = f"http://127.0.0.1:{app_port}"
 
     supervisor = ProcessSupervisor(
         cmd=cmd,
