@@ -21,7 +21,7 @@ from tools.watchdog import ProcessSupervisor, ActionResult, StatusResult
 
 CMD = ["python", "-m", "little_brother"]
 CWD = "/fake/root"
-APP_URL = "http://localhost:5000"
+APP_URL = "http://127.0.0.1:5000"
 APP_PORT = 5000
 
 
