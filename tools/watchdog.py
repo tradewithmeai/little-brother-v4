@@ -224,8 +224,7 @@ class ProcessSupervisor:
     # ------------------------------------------------------------------
 
     def get_status(self) -> StatusResult:
-        # Before discovery completes, report "starting" (tray shows yellow) rather
-        # than a misleading "failed"/"stopped" that would look like a dead app.
+        # Before discovery completes, report "starting" (tray shows yellow).
         if not self._discovery_done.is_set():
             return StatusResult(
                 process_state="starting",
@@ -234,33 +233,35 @@ class ProcessSupervisor:
                 last_health_check_utc_ms=self._last_health_check_ms,
                 detail={"discovered": False, "phase": "discovering"},
             )
-        proc_state = self._process_state()
-        api_ok = self._api_reachable() if proc_state == "running" else False
+        # API reachability is the sole ground truth for health. _process_state()
+        # is a lossy state machine used only by start/stop/restart; gating the
+        # API check behind it is what caused 10+ recurring red-icon bugs.
+        api_ok = self._api_reachable()
+        proc_state = "running" if api_ok else "stopped"
         return StatusResult(
             process_state=proc_state,
             api_reachable=api_ok,
-            status=self._derive_status(proc_state, api_ok),
+            status="ok" if api_ok else "failed",
             last_health_check_utc_ms=self._last_health_check_ms,
-            uptime_seconds=self._uptime() if proc_state == "running" else None,
+            uptime_seconds=self._uptime() if api_ok else None,
             detail={"pid": self._proc_pid or (self._popen.pid if self._popen else None),
                     "discovered": self._discovered},
         )
 
     def run_health_check(self) -> StatusResult:
-        proc_state = self._process_state()
-        api_ok = self._api_reachable() if proc_state == "running" else False
+        api_ok = self._api_reachable()
+        proc_state = "running" if api_ok else "stopped"
         self._last_health_check_ms = int(time.time() * 1000)
         result = StatusResult(
             process_state=proc_state,
             api_reachable=api_ok,
-            status=self._derive_status(proc_state, api_ok),
+            status="ok" if api_ok else "failed",
             last_health_check_utc_ms=self._last_health_check_ms,
-            uptime_seconds=self._uptime() if proc_state == "running" else None,
+            uptime_seconds=self._uptime() if api_ok else None,
             detail={"pid": self._proc_pid or (self._popen.pid if self._popen else None),
                     "discovered": self._discovered},
         )
-        log.info("Health check: process_state=%s api_reachable=%s status=%s",
-                 result.process_state, result.api_reachable, result.status)
+        log.info("Health check: api_reachable=%s status=%s", api_ok, result.status)
         return result
 
     def start_background(self, auto_start: bool, restart_interval: int = 30) -> None:
