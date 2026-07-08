@@ -181,6 +181,13 @@ class ProcessSupervisor:
                 return "running"
             self._discovered = False
             return "stopped"
+        # No process tracking at all — final fallback in case discovery failed
+        # (psutil needs admin on Windows, and a transient API blip during the
+        # 30-second discovery window would leave _discovered=False permanently).
+        if self._api_reachable():
+            log.info("No process tracking but API reachable — re-attaching via API")
+            self._discovered = True
+            return "running"
         return "stopped"
 
     def _api_reachable(self) -> bool:
