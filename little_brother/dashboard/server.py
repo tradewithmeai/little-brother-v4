@@ -451,91 +451,121 @@ def api_keystrokes():
 
 @app.route("/api/heatmap")
 def api_heatmap():
-    """Return a 7×24 activity heatmap (Mon–Sun × 00–23) normalised to 0–100.
+    """Return a 7×24 activity heatmap (Mon–Sun × 00–23).
 
-    Composite score per cell:
-      keystrokes × 1  +  clicks × 15  +  window-switches × 10
-      +  file-events × 8  +  browser-dwell-seconds × 0.3
+    Two modes:
+      Aggregate (default): last `weeks` weeks collapsed by day-of-week.
+      Week browse: pass `week_offset` (0=current, -1=last week, etc.) to
+        get data for exactly one Mon–Sun span in local time.
+
+    Each cell carries raw per-signal values so the client can compose,
+    normalise, and toggle signals without re-fetching.
     """
     weeks     = max(1, min(52, int(request.args.get("weeks", 8))))
     tz_offset = max(-12, min(14, int(request.args.get("tz_offset", 0))))
-    since     = (datetime.utcnow() - timedelta(weeks=weeks)).isoformat()
 
-    tz_mod = (f"datetime(timestamp, '{tz_offset:+d} hours')"
-              if tz_offset != 0 else "timestamp")
+    week_offset_param = request.args.get("week_offset")
+
+    tz_mod    = (f"datetime(timestamp, '{tz_offset:+d} hours')"
+                 if tz_offset != 0 else "timestamp")
     dow_expr  = f"((CAST(strftime('%w', {tz_mod}) AS INTEGER) + 6) % 7)"
     hour_expr = f"CAST(strftime('%H', {tz_mod}) AS INTEGER)"
 
-    grid = {}  # (dow 0=Mon…6=Sun, hour 0-23) -> raw composite score
+    # ── Date range ─────────────────────────────────────────────────────
+    if week_offset_param is not None:
+        # Week-browse mode: one exact Mon–Sun in local time
+        week_offset_val = max(-260, min(0, int(week_offset_param)))
+        # Compute local "now" and walk back to the target Monday
+        local_now = datetime.utcnow() + timedelta(hours=tz_offset)
+        local_monday = (local_now - timedelta(days=local_now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + timedelta(weeks=week_offset_val)
+        local_end = local_monday + timedelta(days=7)
+        # Convert local boundaries back to UTC for the DB WHERE clause
+        since = (local_monday - timedelta(hours=tz_offset)).isoformat()
+        until = (local_end   - timedelta(hours=tz_offset)).isoformat()
+        week_start_date = local_monday.strftime("%Y-%m-%d")
+        mode = "week"
+    else:
+        since = (datetime.utcnow() - timedelta(weeks=weeks)).isoformat()
+        until = None
+        week_start_date = None
+        mode = "aggregate"
+
+    # ── Data fetch ─────────────────────────────────────────────────────
+    grids = {s: {} for s in ("keys", "clicks", "switches", "files", "dwell")}
 
     conn = get_db()
     try:
-        def _accum(sql, params, weight=1.0):
+        def _fill(sig, sql_tmpl, params):
+            where = "timestamp >= ?" + (" AND timestamp < ?" if until else "")
+            sql = sql_tmpl.replace("__WHERE__", where)
             for r in conn.execute(sql, params).fetchall():
                 k = (r[0], r[1])
-                grid[k] = grid.get(k, 0.0) + (r[2] or 0) * weight
+                grids[sig][k] = grids[sig].get(k, 0.0) + (r[2] or 0)
 
-        # Keystrokes (weight 1 per key)
-        _accum(f"""
+        base_p = (since, until) if until else (since,)
+
+        _fill("keys", f"""
             SELECT {dow_expr}, {hour_expr}, SUM(key_count)
             FROM key_events
-            WHERE timestamp >= ? AND (suppressed IS NULL OR suppressed = 0)
+            WHERE __WHERE__ AND (suppressed IS NULL OR suppressed = 0)
             GROUP BY 1, 2
-        """, (since,), 1.0)
+        """, base_p)
 
-        # Mouse clicks (weight 15 per click)
-        _accum(f"""
+        _fill("clicks", f"""
             SELECT {dow_expr}, {hour_expr}, COUNT(*)
-            FROM mouse_click_events
-            WHERE timestamp >= ?
+            FROM mouse_click_events WHERE __WHERE__
             GROUP BY 1, 2
-        """, (since,), 15.0)
+        """, base_p)
 
-        # Window switches — non-heartbeat only (weight 10 per switch)
-        _accum(f"""
+        _fill("switches", f"""
             SELECT {dow_expr}, {hour_expr}, COUNT(*)
             FROM active_window_events
-            WHERE timestamp >= ? AND (is_heartbeat = 0 OR is_heartbeat IS NULL)
+            WHERE __WHERE__ AND (is_heartbeat = 0 OR is_heartbeat IS NULL)
             GROUP BY 1, 2
-        """, (since,), 10.0)
+        """, base_p)
 
-        # Human file events (weight 8 per event)
-        _accum(f"""
+        _fill("files", f"""
             SELECT {dow_expr}, {hour_expr}, COUNT(*)
-            FROM file_events
-            WHERE timestamp >= ? AND source_tag = 'human'
+            FROM file_events WHERE __WHERE__ AND source_tag = 'human'
             GROUP BY 1, 2
-        """, (since,), 8.0)
+        """, base_p)
 
-        # Browser dwell (weight 0.3 per second on-tab)
-        _accum(f"""
+        _fill("dwell", f"""
             SELECT {dow_expr}, {hour_expr},
                    SUM(COALESCE(duration_ms, 0)) / 1000.0
             FROM browser_tab_events
-            WHERE timestamp >= ? AND event_type = 'dwell'
+            WHERE __WHERE__ AND event_type = 'dwell'
             GROUP BY 1, 2
-        """, (since,), 0.3)
-
-        max_raw = max(grid.values()) if grid else 1.0
+        """, base_p)
 
         cells = [
             {
-                "dow":   dow,
-                "hour":  hour,
-                "score": round(grid.get((dow, hour), 0.0) / max_raw * 100, 1),
+                "dow":      dow,
+                "hour":     hour,
+                "keys":     round(grids["keys"]    .get((dow, hour), 0)),
+                "clicks":   round(grids["clicks"]  .get((dow, hour), 0)),
+                "switches": round(grids["switches"].get((dow, hour), 0)),
+                "files":    round(grids["files"]   .get((dow, hour), 0)),
+                "dwell":    round(grids["dwell"]   .get((dow, hour), 0)),
             }
             for dow in range(7)
             for hour in range(24)
         ]
 
-        active_slots = sum(1 for c in cells if c["score"] > 2)
+        active_slots = sum(
+            1 for c in cells
+            if c["keys"] or c["clicks"] or c["switches"] or c["files"] or c["dwell"]
+        )
 
         return jsonify({
-            "weeks":        weeks,
-            "tz_offset":    tz_offset,
-            "max_raw":      round(max_raw, 1),
-            "active_slots": active_slots,
-            "cells":        cells,
+            "mode":            mode,
+            "weeks":           weeks,
+            "tz_offset":       tz_offset,
+            "week_start_date": week_start_date,  # None in aggregate mode
+            "active_slots":    active_slots,
+            "cells":           cells,
         })
     finally:
         conn.close()

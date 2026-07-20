@@ -365,6 +365,19 @@ tr:hover td { background: var(--bg-hover); }
   min-width: 560px;
 }
 .hm-corner {}
+.hm-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.hm-nav-label {
+  font-size: 11px;
+  color: var(--text);
+  letter-spacing: 1px;
+  flex: 1;
+  text-align: center;
+}
 .hm-day-header {
   text-align: center;
   color: var(--text-dim);
@@ -373,6 +386,13 @@ tr:hover td { background: var(--bg-hover); }
   font-size: 9px;
   font-weight: 500;
   text-transform: uppercase;
+  line-height: 1.6;
+}
+.hm-date-sub {
+  display: block;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  font-size: 9px;
 }
 .hm-hour-label {
   color: var(--text-muted);
@@ -569,8 +589,13 @@ tr:hover td { background: var(--bg-hover); }
   <div class="panel">
     <div class="panel-header">
       <div class="panel-title">Weekly Activity Heatmap</div>
-      <div style="display:flex;align-items:center;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <span class="panel-badge" id="hm-badge">—</span>
+        <button class="ctrl active" id="hm-sig-keys"     onclick="hmToggle('keys')"    >KEYS</button>
+        <button class="ctrl active" id="hm-sig-clicks"   onclick="hmToggle('clicks')"  >CLICKS</button>
+        <button class="ctrl active" id="hm-sig-switches" onclick="hmToggle('switches')" >WINDOWS</button>
+        <button class="ctrl active" id="hm-sig-files"    onclick="hmToggle('files')"   >FILES</button>
+        <button class="ctrl active" id="hm-sig-dwell"    onclick="hmToggle('dwell')"   >BROWSER</button>
         <select class="ctrl" id="hm-tz" onchange="refreshHeatmap()" title="Local timezone offset from UTC">
           <option value="-8">UTC-8</option>
           <option value="-7">UTC-7</option>
@@ -598,7 +623,13 @@ tr:hover td { background: var(--bg-hover); }
           <option value="16">16 WEEKS</option>
           <option value="52">ALL TIME</option>
         </select>
+        <button class="ctrl" id="hm-browse-btn" onclick="hmEnterBrowse()" title="Browse specific weeks">&#9664;&#9654; BROWSE</button>
       </div>
+    </div>
+    <div class="hm-nav" id="hm-nav" style="display:none">
+      <button class="ctrl" id="hm-prev" onclick="hmNav(-1)">&#9664; PREV</button>
+      <div class="hm-nav-label" id="hm-nav-label">—</div>
+      <button class="ctrl" id="hm-next" onclick="hmNav(+1)">NEXT &#9654;</button>
     </div>
     <div class="hm-wrap">
       <div class="hm-grid" id="hm-grid"></div>
@@ -955,7 +986,33 @@ function toggleTx(id) {
 
 // ── Activity Heatmap ──────────────────────────────────────────────────────────
 
-const HM_DAYS = ['MON','TUE','WED','THU','FRI','SAT','SUN'];
+const HM_DAYS      = ['MON','TUE','WED','THU','FRI','SAT','SUN'];
+const HM_MONTHS    = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const HM_SIGS      = ['keys','clicks','switches','files','dwell'];
+const HM_SIG_LABEL = { keys:'Keys', clicks:'Clicks', switches:'Windows', files:'Files', dwell:'Browser' };
+const HM_SIG_UNIT  = { keys:'keys', clicks:'clicks', switches:'switches', files:'events', dwell:'s dwell' };
+
+let hmActive      = new Set(HM_SIGS);  // toggled signals
+let hmRawData     = null;              // cached API response
+let hmWeekOffset  = null;              // null = aggregate, 0/-1/-2... = browse mode
+
+function hmMondayOf(offsetWeeks) {
+  const d = new Date();
+  const dow = d.getDay() === 0 ? 6 : d.getDay() - 1;  // 0=Mon
+  d.setDate(d.getDate() - dow + offsetWeeks * 7);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function hmFmtDate(d) {
+  return `${d.getDate()} ${HM_MONTHS[d.getMonth()]}`;
+}
+
+function hmFmtWeekLabel(offsetWeeks) {
+  const mon = hmMondayOf(offsetWeeks);
+  const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+  return `${hmFmtDate(mon)} – ${hmFmtDate(sun)} ${sun.getFullYear()}`;
+}
 
 function hmColor(score) {
   if (score <= 0) return '#050c06';
@@ -979,69 +1036,153 @@ function hmColor(score) {
 }
 
 function hmLabel(score) {
-  if (score === 0)   return 'Dormant';
-  if (score < 10)    return 'Trace';
-  if (score < 30)    return 'Light';
-  if (score < 55)    return 'Moderate';
-  if (score < 80)    return 'Active';
+  if (score === 0)  return 'Dormant';
+  if (score < 10)   return 'Trace';
+  if (score < 30)   return 'Light';
+  if (score < 55)   return 'Moderate';
+  if (score < 80)   return 'Active';
   return 'Peak';
 }
 
-async function refreshHeatmap() {
-  const weeks  = document.getElementById('hm-weeks').value;
-  const tzOff  = document.getElementById('hm-tz').value;
+function hmToggle(sig) {
+  if (hmActive.has(sig)) {
+    // Don't allow deselecting the last signal
+    if (hmActive.size === 1) return;
+    hmActive.delete(sig);
+  } else {
+    hmActive.add(sig);
+  }
+  document.getElementById(`hm-sig-${sig}`).classList.toggle('active', hmActive.has(sig));
+  hmRerender();
+}
 
-  try {
-    const data = await api(`/api/heatmap?weeks=${weeks}&tz_offset=${tzOff}`);
-    const lookup = {};
-    for (const c of (data.cells || [])) lookup[`${c.dow},${c.hour}`] = c.score;
+function hmRerender() {
+  if (!hmRawData) return;
 
-    const grid = document.getElementById('hm-grid');
-    grid.innerHTML = '';
+  const cells = hmRawData.cells || [];
+  const active = [...hmActive];
 
-    // Corner
-    grid.appendChild(Object.assign(document.createElement('div'), { className: 'hm-corner' }));
+  // Normalise each active signal independently to 0–100 across all cells,
+  // then average them so each signal has equal visual weight.
+  const sigMax = {};
+  for (const sig of active) {
+    sigMax[sig] = Math.max(...cells.map(c => c[sig] || 0), 1);
+  }
 
-    // Day headers
-    HM_DAYS.forEach(d => {
-      const el = document.createElement('div');
-      el.className = 'hm-day-header';
-      el.textContent = d;
-      grid.appendChild(el);
-    });
+  const scores = cells.map(c => {
+    const avg = active.reduce((s, sig) => s + (c[sig] || 0) / sigMax[sig], 0) / active.length;
+    return avg * 100;
+  });
 
-    // Hour rows
-    for (let h = 0; h < 24; h++) {
-      const lbl = document.createElement('div');
-      lbl.className = 'hm-hour-label';
-      lbl.textContent = String(h).padStart(2, '0') + ':00';
-      grid.appendChild(lbl);
+  const peakScore = Math.max(...scores, 0);
+  const peakIdx   = scores.indexOf(peakScore);
 
-      for (let d = 0; d < 7; d++) {
-        const score = lookup[`${d},${h}`] || 0;
-        const cell  = document.createElement('div');
-        cell.className = 'hm-cell';
-        cell.style.background = hmColor(score);
-        cell.title = `${HM_DAYS[d]}  ${String(h).padStart(2,'0')}:00  •  ${hmLabel(score)} (${Math.round(score)}%)`;
-        grid.appendChild(cell);
-      }
+  // Update cell colours and tooltips
+  const cellEls = document.querySelectorAll('.hm-cell');
+  cellEls.forEach((el, i) => {
+    const c     = cells[i];
+    const score = scores[i];
+    el.style.background = hmColor(score);
+    const breakdown = active.map(sig =>
+      `${HM_SIG_LABEL[sig]}: ${(c[sig] || 0).toLocaleString()} ${HM_SIG_UNIT[sig]}`
+    ).join('  |  ');
+    el.title = `${HM_DAYS[c.dow]}  ${String(c.hour).padStart(2,'0')}:00  •  ${hmLabel(score)} (${Math.round(score)}%)\n${breakdown}`;
+  });
+
+  // Stats
+  const peakCell = peakScore > 0 ? cells[peakIdx] : null;
+  const peakLabel = peakCell
+    ? `${HM_DAYS[peakCell.dow]} ${String(peakCell.hour).padStart(2,'0')}:00`
+    : '—';
+  const tzOff = document.getElementById('hm-tz').value;
+  const activeSlots = scores.filter(s => s > 2).length;
+
+  document.getElementById('hm-badge').textContent =
+    `${activeSlots} active  ·  ${active.length}/${HM_SIGS.length} signals`;
+  document.getElementById('hm-stats').innerHTML = `
+    <div class="hm-stat">PEAK SLOT <span>${peakLabel}</span></div>
+    <div class="hm-stat">ACTIVE HOURS <span>${activeSlots} / 168</span></div>
+    <div class="hm-stat">TIMEZONE <span>UTC${parseInt(tzOff) >= 0 ? '+' : ''}${tzOff}</span></div>
+    <div class="hm-stat">SIGNALS <span>${active.map(s => HM_SIG_LABEL[s]).join(', ')}</span></div>
+  `;
+}
+
+function hmBuildGrid() {
+  if (!hmRawData) return;
+  const isBrowse = hmWeekOffset !== null;
+  const grid = document.getElementById('hm-grid');
+  grid.innerHTML = '';
+
+  // Corner
+  grid.appendChild(Object.assign(document.createElement('div'), { className: 'hm-corner' }));
+
+  // Day headers — with dates when browsing a specific week
+  const mon = isBrowse ? hmMondayOf(hmWeekOffset) : null;
+  HM_DAYS.forEach((day, i) => {
+    const el = document.createElement('div');
+    el.className = 'hm-day-header';
+    if (mon) {
+      const d = new Date(mon); d.setDate(mon.getDate() + i);
+      el.innerHTML = `${day}<span class="hm-date-sub">${hmFmtDate(d)}</span>`;
+    } else {
+      el.textContent = day;
     }
+    grid.appendChild(el);
+  });
 
-    // Stats bar
-    const peakSlot = (data.cells || []).reduce((p, c) => c.score > p.score ? c : p, { score: 0, dow: 0, hour: 0 });
-    const peakLabel = peakSlot.score > 0
-      ? `${HM_DAYS[peakSlot.dow]} ${String(peakSlot.hour).padStart(2,'0')}:00`
-      : '—';
+  // Hour rows (cells coloured by hmRerender)
+  for (let h = 0; h < 24; h++) {
+    const lbl = document.createElement('div');
+    lbl.className = 'hm-hour-label';
+    lbl.textContent = String(h).padStart(2, '0') + ':00';
+    grid.appendChild(lbl);
+    for (let d = 0; d < 7; d++) {
+      const el = document.createElement('div');
+      el.className = 'hm-cell';
+      grid.appendChild(el);
+    }
+  }
 
-    document.getElementById('hm-badge').textContent =
-      `${data.active_slots || 0} active hour-slots  ·  ${weeks}w window`;
+  // Nav bar
+  const navEl = document.getElementById('hm-nav');
+  navEl.style.display = isBrowse ? 'flex' : 'none';
+  if (isBrowse) {
+    document.getElementById('hm-nav-label').textContent = hmFmtWeekLabel(hmWeekOffset);
+    document.getElementById('hm-next').disabled = (hmWeekOffset >= 0);
+  }
 
-    document.getElementById('hm-stats').innerHTML = `
-      <div class="hm-stat">PEAK SLOT <span>${peakLabel}</span></div>
-      <div class="hm-stat">ACTIVE HOURS <span>${data.active_slots || 0} / 168</span></div>
-      <div class="hm-stat">TIMEZONE <span>UTC${parseInt(tzOff) >= 0 ? '+' : ''}${tzOff}</span></div>
-    `;
+  hmRerender();
+}
+
+function hmNav(delta) {
+  if (hmWeekOffset === null) hmWeekOffset = 0;
+  hmWeekOffset = Math.min(0, hmWeekOffset + delta);
+  fetchHeatmap();
+}
+
+async function fetchHeatmap() {
+  const weeks = document.getElementById('hm-weeks').value;
+  const tzOff = document.getElementById('hm-tz').value;
+  const params = hmWeekOffset !== null
+    ? `week_offset=${hmWeekOffset}&tz_offset=${tzOff}`
+    : `weeks=${weeks}&tz_offset=${tzOff}`;
+  try {
+    hmRawData = await api(`/api/heatmap?${params}`);
+    hmBuildGrid();
   } catch(e) { console.error('heatmap', e); }
+}
+
+async function refreshHeatmap() {
+  // Changing the weeks selector resets to aggregate mode
+  hmWeekOffset = null;
+  document.getElementById('hm-browse-btn').classList.remove('active');
+  await fetchHeatmap();
+}
+
+function hmEnterBrowse() {
+  hmWeekOffset = 0;  // start at current week
+  document.getElementById('hm-browse-btn').classList.add('active');
+  fetchHeatmap();
 }
 
 function hmAutoTz() {
