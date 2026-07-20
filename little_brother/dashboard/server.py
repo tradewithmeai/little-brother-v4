@@ -449,6 +449,98 @@ def api_keystrokes():
         conn.close()
 
 
+@app.route("/api/heatmap")
+def api_heatmap():
+    """Return a 7×24 activity heatmap (Mon–Sun × 00–23) normalised to 0–100.
+
+    Composite score per cell:
+      keystrokes × 1  +  clicks × 15  +  window-switches × 10
+      +  file-events × 8  +  browser-dwell-seconds × 0.3
+    """
+    weeks     = max(1, min(52, int(request.args.get("weeks", 8))))
+    tz_offset = max(-12, min(14, int(request.args.get("tz_offset", 0))))
+    since     = (datetime.utcnow() - timedelta(weeks=weeks)).isoformat()
+
+    tz_mod = (f"datetime(timestamp, '{tz_offset:+d} hours')"
+              if tz_offset != 0 else "timestamp")
+    dow_expr  = f"((CAST(strftime('%w', {tz_mod}) AS INTEGER) + 6) % 7)"
+    hour_expr = f"CAST(strftime('%H', {tz_mod}) AS INTEGER)"
+
+    grid = {}  # (dow 0=Mon…6=Sun, hour 0-23) -> raw composite score
+
+    conn = get_db()
+    try:
+        def _accum(sql, params, weight=1.0):
+            for r in conn.execute(sql, params).fetchall():
+                k = (r[0], r[1])
+                grid[k] = grid.get(k, 0.0) + (r[2] or 0) * weight
+
+        # Keystrokes (weight 1 per key)
+        _accum(f"""
+            SELECT {dow_expr}, {hour_expr}, SUM(key_count)
+            FROM key_events
+            WHERE timestamp >= ? AND (suppressed IS NULL OR suppressed = 0)
+            GROUP BY 1, 2
+        """, (since,), 1.0)
+
+        # Mouse clicks (weight 15 per click)
+        _accum(f"""
+            SELECT {dow_expr}, {hour_expr}, COUNT(*)
+            FROM mouse_click_events
+            WHERE timestamp >= ?
+            GROUP BY 1, 2
+        """, (since,), 15.0)
+
+        # Window switches — non-heartbeat only (weight 10 per switch)
+        _accum(f"""
+            SELECT {dow_expr}, {hour_expr}, COUNT(*)
+            FROM active_window_events
+            WHERE timestamp >= ? AND (is_heartbeat = 0 OR is_heartbeat IS NULL)
+            GROUP BY 1, 2
+        """, (since,), 10.0)
+
+        # Human file events (weight 8 per event)
+        _accum(f"""
+            SELECT {dow_expr}, {hour_expr}, COUNT(*)
+            FROM file_events
+            WHERE timestamp >= ? AND source_tag = 'human'
+            GROUP BY 1, 2
+        """, (since,), 8.0)
+
+        # Browser dwell (weight 0.3 per second on-tab)
+        _accum(f"""
+            SELECT {dow_expr}, {hour_expr},
+                   SUM(COALESCE(duration_ms, 0)) / 1000.0
+            FROM browser_tab_events
+            WHERE timestamp >= ? AND event_type = 'dwell'
+            GROUP BY 1, 2
+        """, (since,), 0.3)
+
+        max_raw = max(grid.values()) if grid else 1.0
+
+        cells = [
+            {
+                "dow":   dow,
+                "hour":  hour,
+                "score": round(grid.get((dow, hour), 0.0) / max_raw * 100, 1),
+            }
+            for dow in range(7)
+            for hour in range(24)
+        ]
+
+        active_slots = sum(1 for c in cells if c["score"] > 2)
+
+        return jsonify({
+            "weeks":        weeks,
+            "tz_offset":    tz_offset,
+            "max_raw":      round(max_raw, 1),
+            "active_slots": active_slots,
+            "cells":        cells,
+        })
+    finally:
+        conn.close()
+
+
 # --- Server wrapper ---
 
 class DashboardServer:

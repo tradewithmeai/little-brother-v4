@@ -354,6 +354,77 @@ tr:hover td { background: var(--bg-hover); }
   font-size: 11px;
 }
 
+/* ── Activity Heatmap ── */
+.hm-wrap {
+  overflow-x: auto;
+}
+.hm-grid {
+  display: grid;
+  grid-template-columns: 48px repeat(7, 1fr);
+  gap: 2px;
+  min-width: 560px;
+}
+.hm-corner {}
+.hm-day-header {
+  text-align: center;
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  padding: 0 0 10px;
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+.hm-hour-label {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  padding-right: 6px;
+}
+.hm-cell {
+  height: 26px;
+  border-radius: 2px;
+  cursor: default;
+  transition: filter 0.1s, transform 0.1s;
+  position: relative;
+}
+.hm-cell:hover {
+  filter: brightness(1.5);
+  transform: scale(1.08);
+  z-index: 10;
+}
+.hm-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.hm-legend-bar {
+  flex: 1;
+  max-width: 280px;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to right, #050c06, #071e10, #054a1a, #007a32, #00b450, #00e676);
+}
+.hm-stats {
+  display: flex;
+  gap: 24px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.hm-stat {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 1px;
+}
+.hm-stat span { color: var(--green); }
+
 /* ── Scrollbar global ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
@@ -492,6 +563,51 @@ tr:hover td { background: var(--bg-hover); }
       </div>
       <div id="tabs-table"></div>
     </div>
+  </div>
+
+  <!-- Activity Heatmap -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Weekly Activity Heatmap</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span class="panel-badge" id="hm-badge">—</span>
+        <select class="ctrl" id="hm-tz" onchange="refreshHeatmap()" title="Local timezone offset from UTC">
+          <option value="-8">UTC-8</option>
+          <option value="-7">UTC-7</option>
+          <option value="-6">UTC-6</option>
+          <option value="-5">UTC-5</option>
+          <option value="-4">UTC-4</option>
+          <option value="-3">UTC-3</option>
+          <option value="0">UTC+0</option>
+          <option value="1">UTC+1</option>
+          <option value="2">UTC+2</option>
+          <option value="3">UTC+3</option>
+          <option value="4">UTC+4</option>
+          <option value="5">UTC+5</option>
+          <option value="6">UTC+6</option>
+          <option value="7">UTC+7</option>
+          <option value="8">UTC+8</option>
+          <option value="9">UTC+9</option>
+          <option value="10">UTC+10</option>
+        </select>
+        <select class="ctrl" id="hm-weeks" onchange="refreshHeatmap()">
+          <option value="2">2 WEEKS</option>
+          <option value="4">4 WEEKS</option>
+          <option value="8" selected>8 WEEKS</option>
+          <option value="16">16 WEEKS</option>
+          <option value="52">ALL TIME</option>
+        </select>
+      </div>
+    </div>
+    <div class="hm-wrap">
+      <div class="hm-grid" id="hm-grid"></div>
+    </div>
+    <div class="hm-legend">
+      <span>DORMANT</span>
+      <div class="hm-legend-bar"></div>
+      <span>PEAK</span>
+    </div>
+    <div class="hm-stats" id="hm-stats"></div>
   </div>
 
 </div><!-- /container -->
@@ -836,7 +952,111 @@ function toggleTx(id) {
   document.getElementById(id).classList.toggle('open');
 }
 
+// ── Activity Heatmap ──────────────────────────────────────────────────────────
+
+const HM_DAYS = ['MON','TUE','WED','THU','FRI','SAT','SUN'];
+
+function hmColor(score) {
+  if (score <= 0) return '#050c06';
+  const stops = [
+    [0,   [5,  12,  6]],
+    [8,   [7,  30, 16]],
+    [25,  [5,  74, 26]],
+    [50,  [0, 122, 50]],
+    [75,  [0, 180, 80]],
+    [100, [0, 230,118]],
+  ];
+  for (let i = 1; i < stops.length; i++) {
+    if (score <= stops[i][0] || i === stops.length - 1) {
+      const [s0, c0] = stops[i - 1];
+      const [s1, c1] = stops[i];
+      const t = Math.min(1, Math.max(0, (score - s0) / (s1 - s0)));
+      return `rgb(${Math.round(c0[0]+(c1[0]-c0[0])*t)},${Math.round(c0[1]+(c1[1]-c0[1])*t)},${Math.round(c0[2]+(c1[2]-c0[2])*t)})`;
+    }
+  }
+  return '#00e676';
+}
+
+function hmLabel(score) {
+  if (score === 0)   return 'Dormant';
+  if (score < 10)    return 'Trace';
+  if (score < 30)    return 'Light';
+  if (score < 55)    return 'Moderate';
+  if (score < 80)    return 'Active';
+  return 'Peak';
+}
+
+async function refreshHeatmap() {
+  const weeks  = document.getElementById('hm-weeks').value;
+  const tzOff  = document.getElementById('hm-tz').value;
+
+  try {
+    const data = await api(`/api/heatmap?weeks=${weeks}&tz_offset=${tzOff}`);
+    const lookup = {};
+    for (const c of (data.cells || [])) lookup[`${c.dow},${c.hour}`] = c.score;
+
+    const grid = document.getElementById('hm-grid');
+    grid.innerHTML = '';
+
+    // Corner
+    grid.appendChild(Object.assign(document.createElement('div'), { className: 'hm-corner' }));
+
+    // Day headers
+    HM_DAYS.forEach(d => {
+      const el = document.createElement('div');
+      el.className = 'hm-day-header';
+      el.textContent = d;
+      grid.appendChild(el);
+    });
+
+    // Hour rows
+    for (let h = 0; h < 24; h++) {
+      const lbl = document.createElement('div');
+      lbl.className = 'hm-hour-label';
+      lbl.textContent = String(h).padStart(2, '0') + ':00';
+      grid.appendChild(lbl);
+
+      for (let d = 0; d < 7; d++) {
+        const score = lookup[`${d},${h}`] || 0;
+        const cell  = document.createElement('div');
+        cell.className = 'hm-cell';
+        cell.style.background = hmColor(score);
+        cell.title = `${HM_DAYS[d]}  ${String(h).padStart(2,'0')}:00  •  ${hmLabel(score)} (${Math.round(score)}%)`;
+        grid.appendChild(cell);
+      }
+    }
+
+    // Stats bar
+    const peakSlot = (data.cells || []).reduce((p, c) => c.score > p.score ? c : p, { score: 0, dow: 0, hour: 0 });
+    const peakLabel = peakSlot.score > 0
+      ? `${HM_DAYS[peakSlot.dow]} ${String(peakSlot.hour).padStart(2,'0')}:00`
+      : '—';
+
+    document.getElementById('hm-badge').textContent =
+      `${data.active_slots || 0} active hour-slots  ·  ${weeks}w window`;
+
+    document.getElementById('hm-stats').innerHTML = `
+      <div class="hm-stat">PEAK SLOT <span>${peakLabel}</span></div>
+      <div class="hm-stat">ACTIVE HOURS <span>${data.active_slots || 0} / 168</span></div>
+      <div class="hm-stat">TIMEZONE <span>UTC${parseInt(tzOff) >= 0 ? '+' : ''}${tzOff}</span></div>
+    `;
+  } catch(e) { console.error('heatmap', e); }
+}
+
+function hmAutoTz() {
+  const offset = -new Date().getTimezoneOffset() / 60;
+  const sel = document.getElementById('hm-tz');
+  let best = null, bestDiff = Infinity;
+  for (const opt of sel.options) {
+    const diff = Math.abs(parseInt(opt.value) - offset);
+    if (diff < bestDiff) { bestDiff = diff; best = opt; }
+  }
+  if (best) best.selected = true;
+}
+
 // Boot
+hmAutoTz();
+refreshHeatmap();
 refresh();
 startTimer();
 </script>
