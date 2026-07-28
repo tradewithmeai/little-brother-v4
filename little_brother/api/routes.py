@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, Response, jsonify, request
 
 from .auth import require_api_key
+from .console import register_console_routes
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "little_brother.db")
 
@@ -28,6 +29,7 @@ def create_api_blueprint(orchestrator, event_bus):
     """Create the API Blueprint with references to the orchestrator and event bus."""
 
     api = Blueprint("api_v1", __name__)
+    register_console_routes(api)
 
     # ------------------------------------------------------------------
     # Status
