@@ -722,6 +722,27 @@ def create_api_blueprint(orchestrator, event_bus):
                     domain_dwell[d] = domain_dwell.get(d, 0) + (r["total_dwell_ms"] or 0)
             top_domains = sorted(domain_dwell.items(), key=lambda x: -x[1])[:10]
 
+            # Category-level dwell aggregation. Ambient (background streaming) is
+            # its own neutral bucket — concurrent with work, so never counted as
+            # work and never counted as wasted/leisure time.
+            from ..analysis.classify import get_classifier, NEUTRAL_CATEGORIES
+            classifier = get_classifier()
+            # Aggregate over ALL dwell in the period, not just the top 15 URLs.
+            all_dwell = conn.execute("""
+                SELECT url, title, SUM(duration_ms) as total_dwell_ms
+                FROM browser_tab_events
+                WHERE event_type = 'dwell' AND timestamp >= ?
+                GROUP BY url
+            """, (since,)).fetchall()
+            cat_dwell = {}
+            for r in all_dwell:
+                cat = classifier.classify(url=r["url"] or "", title=r["title"] or "")
+                cat_dwell[cat] = cat_dwell.get(cat, 0) + (r["total_dwell_ms"] or 0)
+            dwell_by_category = [
+                {"category": c, "total_dwell_ms": ms, "neutral": c in NEUTRAL_CATEGORIES}
+                for c, ms in sorted(cat_dwell.items(), key=lambda x: -x[1])
+            ]
+
             return jsonify({
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "period_hours": hours,
@@ -740,12 +761,16 @@ def create_api_blueprint(orchestrator, event_bus):
                         "title": r["title"],
                         "visits": r["visits"],
                         "total_dwell_ms": r["total_dwell_ms"],
+                        "category": classifier.classify(url=r["url"] or "", title=r["title"] or ""),
                     }
                     for r in top_dwell
                 ],
                 "top_domains_by_dwell": [
-                    {"domain": d, "total_dwell_ms": ms} for d, ms in top_domains
+                    {"domain": d, "total_dwell_ms": ms,
+                     "category": classifier.classify(url="https://" + d)}
+                    for d, ms in top_domains
                 ],
+                "dwell_by_category": dwell_by_category,
                 "top_applications": [
                     {"process": r["process_name"], "switches": r["switches"]}
                     for r in top_apps

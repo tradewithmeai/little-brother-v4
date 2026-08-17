@@ -16,6 +16,11 @@
     "keystroke_title_patterns": [],
     "keystroke_url_patterns": []
   },
+  "activity_classification": {
+    "ambient_url_patterns": [],
+    "ambient_title_patterns": [],
+    "rules": []
+  },
   "api_key": "ecffce0a195432624cb8a47d0753507e5b9c1ba14006f35bcc562ebb7967a472",
   "webhooks": [],
   "watchdog": {

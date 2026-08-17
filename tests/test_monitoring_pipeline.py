@@ -519,5 +519,57 @@ class TestIngestExclusion(unittest.TestCase):
             self.assertTrue(fake_conn.execute.called)
 
 
+# ---------------------------------------------------------------------------
+# Activity classification tests
+# ---------------------------------------------------------------------------
+
+from little_brother.analysis.classify import Classifier, AMBIENT, WORK, COMMS, OTHER
+
+
+class TestActivityClassification(unittest.TestCase):
+
+    def setUp(self):
+        self.c = Classifier.from_config({})
+
+    def test_streaming_is_ambient(self):
+        self.assertEqual(self.c.classify(url="https://www.channel4.com/watch/x"), AMBIENT)
+        self.assertEqual(self.c.classify(url="https://www.itv.com/watch/x", title="Show - ITVX"), AMBIENT)
+        self.assertEqual(self.c.classify(title="The Boys - Prime Video"), AMBIENT)
+
+    def test_ambiguous_domains_resolved_by_path_and_title(self):
+        # BBC iPlayer is ambient; BBC News on the same domain is not.
+        self.assertEqual(self.c.classify(url="https://www.bbc.co.uk/iplayer/episode/a",
+                                         title="Show - BBC iPlayer"), AMBIENT)
+        self.assertNotEqual(self.c.classify(url="https://www.bbc.co.uk/news/uk-1",
+                                            title="UK News - BBC"), AMBIENT)
+        # Amazon Prime Video is ambient; Amazon shopping on the same domain is not.
+        self.assertEqual(self.c.classify(url="https://www.amazon.co.uk/gp/video/detail/x",
+                                         title="Film - Prime Video"), AMBIENT)
+        self.assertNotEqual(self.c.classify(url="https://www.amazon.co.uk/dp/B0X",
+                                            title="Drill - Amazon.co.uk"), AMBIENT)
+
+    def test_ambient_is_neutral(self):
+        self.assertTrue(self.c.is_neutral(url="https://www.channel4.com/watch/x"))
+        self.assertFalse(self.c.is_neutral(url="https://claude.ai/"))
+
+    def test_work_and_comms(self):
+        self.assertEqual(self.c.classify(url="https://claude.ai/chat/1"), WORK)
+        self.assertEqual(self.c.classify(url="https://mail.google.com/"), COMMS)
+
+    def test_youtube_not_ambient_by_default(self):
+        self.assertNotEqual(self.c.classify(url="https://www.youtube.com/watch?v=x"), AMBIENT)
+
+    def test_config_ambient_extension(self):
+        c = Classifier.from_config(
+            {"activity_classification": {"ambient_url_patterns": ["youtube.com/watch"]}}
+        )
+        self.assertEqual(c.classify(url="https://www.youtube.com/watch?v=x"), AMBIENT)
+        # Built-in defaults still apply.
+        self.assertEqual(c.classify(url="https://www.channel4.com/watch/x"), AMBIENT)
+
+    def test_unknown_is_other(self):
+        self.assertEqual(self.c.classify(url="https://some-random-site.example/"), OTHER)
+
+
 if __name__ == "__main__":
     unittest.main()
