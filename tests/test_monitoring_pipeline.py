@@ -445,45 +445,58 @@ from little_brother.monitors.exclusions import PrivacyExclusions
 
 class TestPrivacyExclusions(unittest.TestCase):
 
-    def test_default_whatsapp_title_excluded(self):
+    def test_whatsapp_keystrokes_excluded(self):
+        # WhatsApp keystrokes are withheld...
         ex = PrivacyExclusions.from_config({})
-        self.assertTrue(ex.is_excluded(title="(3) WhatsApp - Mozilla Firefox"))
-        self.assertTrue(ex.is_excluded(title="WhatsApp"))
+        self.assertTrue(ex.exclude_keystrokes(title="(3) WhatsApp - Mozilla Firefox"))
+        self.assertTrue(ex.exclude_keystrokes(title="WhatsApp"))
+        self.assertTrue(ex.exclude_keystrokes(url="https://web.whatsapp.com/"))
 
-    def test_default_whatsapp_url_excluded(self):
+    def test_whatsapp_usage_still_visible(self):
+        # ...but its usage (window/mouse/browser) is NOT fully excluded.
         ex = PrivacyExclusions.from_config({})
-        self.assertTrue(ex.is_excluded(url="https://web.whatsapp.com/"))
-        self.assertTrue(ex.is_excluded(title="New Tab", url="https://web.whatsapp.com/send?phone=1"))
+        self.assertFalse(ex.is_excluded(title="(3) WhatsApp - Mozilla Firefox"))
+        self.assertFalse(ex.is_excluded(url="https://web.whatsapp.com/"))
 
     def test_non_excluded_pass_through(self):
         ex = PrivacyExclusions.from_config({})
-        self.assertFalse(ex.is_excluded(title="WindowsTerminal"))
-        self.assertFalse(ex.is_excluded(title="claude.ai", url="https://claude.ai/"))
+        self.assertFalse(ex.exclude_keystrokes(title="WindowsTerminal"))
+        self.assertFalse(ex.exclude_keystrokes(title="claude.ai", url="https://claude.ai/"))
         self.assertFalse(ex.is_excluded(title="Amazon", url="https://www.amazon.co.uk/"))
 
+    def test_full_exclusion_implies_keystroke_exclusion(self):
+        ex = PrivacyExclusions.from_config(
+            {"privacy_exclusions": {"title_patterns": ["banking"]}}
+        )
+        self.assertTrue(ex.is_excluded(title="My Banking"))
+        self.assertTrue(ex.exclude_keystrokes(title="My Banking"))
+
     def test_process_name_never_triggers_exclusion(self):
-        # Excluding a web app must not silence its whole browser.
+        # A web-app rule must not silence its whole browser.
         ex = PrivacyExclusions.from_config({})
         self.assertFalse(ex.is_excluded(title="GitHub - Mozilla Firefox", url="https://github.com/"))
+        self.assertFalse(ex.exclude_keystrokes(title="GitHub - Mozilla Firefox", url="https://github.com/"))
 
     def test_config_extends_defaults(self):
         ex = PrivacyExclusions.from_config(
-            {"privacy_exclusions": {"title_patterns": ["signal"], "url_patterns": ["telegram.org"]}}
+            {"privacy_exclusions": {"keystroke_title_patterns": ["signal"],
+                                    "keystroke_url_patterns": ["telegram.org"]}}
         )
-        # Custom rules apply...
-        self.assertTrue(ex.is_excluded(title="Signal"))
-        self.assertTrue(ex.is_excluded(url="https://web.telegram.org/"))
-        # ...and built-in defaults still apply.
-        self.assertTrue(ex.is_excluded(title="WhatsApp"))
+        # Custom keystroke rules apply...
+        self.assertTrue(ex.exclude_keystrokes(title="Signal"))
+        self.assertTrue(ex.exclude_keystrokes(url="https://web.telegram.org/"))
+        # ...and built-in WhatsApp default still applies.
+        self.assertTrue(ex.exclude_keystrokes(title="WhatsApp"))
 
     def test_case_insensitive(self):
         ex = PrivacyExclusions.from_config({})
-        self.assertTrue(ex.is_excluded(title="WHATSAPP"))
-        self.assertTrue(ex.is_excluded(url="https://WEB.WHATSAPP.COM/"))
+        self.assertTrue(ex.exclude_keystrokes(title="WHATSAPP"))
+        self.assertTrue(ex.exclude_keystrokes(url="https://WEB.WHATSAPP.COM/"))
 
 
 class TestIngestExclusion(unittest.TestCase):
-    """The Firefox extension ingest endpoint drops excluded tabs."""
+    """The Firefox extension ingest endpoint stores WhatsApp usage (keystrokes
+    are handled by the keyboard monitor, not here)."""
 
     def setUp(self):
         from little_brother.dashboard import server as srv
@@ -491,18 +504,19 @@ class TestIngestExclusion(unittest.TestCase):
         srv.app.config["TESTING"] = True
         self._client = srv.app.test_client()
 
-    def test_whatsapp_ingest_not_stored(self):
-        with patch.object(self._srv, "_write_db") as mock_wdb:
+    def test_whatsapp_usage_ingest_is_stored(self):
+        fake_conn = MagicMock()
+        with patch.object(self._srv, "_write_db", return_value=fake_conn) as mock_wdb:
             resp = self._client.post(
                 "/api/browser-tab",
                 json={"event_type": "created", "title": "WhatsApp",
                       "url": "https://web.whatsapp.com/", "tab_id": "wa-test"},
                 environ_base={"REMOTE_ADDR": "127.0.0.1"},
             )
-            self.assertEqual(resp.status_code, 202)
-            self.assertTrue(resp.get_json().get("excluded"))
-            # No DB write connection should ever be opened for an excluded tab.
-            mock_wdb.assert_not_called()
+            self.assertEqual(resp.status_code, 201)
+            # Usage IS recorded: a write connection was opened and an insert ran.
+            mock_wdb.assert_called_once()
+            self.assertTrue(fake_conn.execute.called)
 
 
 if __name__ == "__main__":

@@ -239,8 +239,10 @@ class KeyboardMonitor:
             else:
                 window_title, process_name = self._get_foreground_info()
 
-            # Privacy exclusion: drop entirely (no row, not even a placeholder).
-            if get_exclusions().is_excluded(title=window_title):
+            # Keystroke privacy exclusion: drop entirely (no row, not even a
+            # count). Usage of these apps is still recorded by the other
+            # monitors — only the typed content is withheld.
+            if get_exclusions().exclude_keystrokes(title=window_title):
                 return
 
             suppressed = self._is_suppressed(window_title, process_name)

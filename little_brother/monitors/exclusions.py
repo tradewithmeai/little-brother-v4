@@ -1,29 +1,29 @@
-"""Privacy exclusions — activity that must never be recorded by any monitor.
+"""Privacy exclusions — activity that monitors must not record in full.
 
-This is the single source of truth for "do not monitor this". Every monitor
-(keyboard, mouse, active window, browser tabs, and the Firefox extension ingest
-endpoint) consults the shared instance returned by ``get_exclusions()``.
+Single source of truth for "do not monitor this", consulted by every capture
+point. There are two tiers:
 
-Matched activity is dropped entirely — it is never written to the database, not
-even as a ``[SUPPRESSED]`` placeholder. That distinction matters: suppression
-still records *that* something happened (a keystroke count, a window switch);
-exclusion leaves no trace at all.
+  * **Full exclusion** — the activity is invisible to the entire system. No
+    window switch, no click, no browser tab, no keystroke is ever stored. Use
+    for things you never want to know happened at all.
 
-Rules come from two places, merged together:
+  * **Keystroke exclusion** — the app's *usage* is recorded normally (window
+    focus, time spent, clicks, browser tabs) but keystrokes typed into it are
+    never captured. Use for private-content apps you still want visibility of:
+    you can see that WhatsApp Web was open for 20 minutes without recording a
+    single character of the messages.
 
-  * the built-in defaults below (sensible privacy defaults shipped with the app)
-  * the ``privacy_exclusions`` block in ``config.json`` (user extensions)
+A full exclusion implies keystroke exclusion (if you can't see it happened, you
+certainly can't see what was typed).
 
-Matching is case-insensitive substring matching. A monitor that can see a URL
-(browser tabs, extension ingest) matches on both URL and window title; monitors
-that only see a native window title (keyboard, mouse, active window) match on the
-title alone. Because a browser puts the page/tab name into its window title, a
-title rule like ``"whatsapp"`` reaches WhatsApp Web across every monitor even
-though only the browser monitors ever see the ``web.whatsapp.com`` URL.
-
-Note: matching never keys off process name, so excluding a web app does not
-disable monitoring of its host browser — only the browser windows/tabs whose
-title or URL matches are dropped.
+Rules come from built-in defaults below plus a ``privacy_exclusions`` block in
+``config.json``, merged together. Matching is case-insensitive substring
+matching on window title and/or URL. Monitors that only see a native window
+title (keyboard, mouse, active window) match on the title alone; because a
+browser puts the page/tab name into its window title, a title rule like
+``"whatsapp"`` reaches WhatsApp Web even though only the browser monitors ever
+see the ``web.whatsapp.com`` URL. Matching never keys off process name, so a
+rule targeting a web app never disables monitoring of its host browser.
 """
 
 import json
@@ -31,46 +31,72 @@ import os
 import threading
 
 
-# Built-in defaults. Case-insensitive substrings. Keep this list conservative —
-# anything here is invisible to the entire system by design.
-_DEFAULT_TITLE_PATTERNS = [
+# Built-in FULL exclusions — invisible to the whole system. Case-insensitive
+# substrings. Conservative by design; anything here leaves no trace at all.
+_DEFAULT_TITLE_PATTERNS = []
+_DEFAULT_URL_PATTERNS = []
+
+# Built-in KEYSTROKE exclusions — usage is recorded, keystrokes are not.
+_DEFAULT_KEYSTROKE_TITLE_PATTERNS = [
     "whatsapp",          # WhatsApp Web tab title (browser window title) + desktop app
 ]
-_DEFAULT_URL_PATTERNS = [
+_DEFAULT_KEYSTROKE_URL_PATTERNS = [
     "web.whatsapp.com",  # WhatsApp Web
 ]
 
 
-class PrivacyExclusions:
-    """Immutable set of title/URL substring rules used to drop activity."""
+def _match(patterns, value):
+    v = (value or "").lower()
+    return any(p in v for p in patterns)
 
-    def __init__(self, title_patterns=None, url_patterns=None):
+
+class PrivacyExclusions:
+    """Immutable set of full and keystroke-only exclusion rules."""
+
+    def __init__(self, title_patterns=None, url_patterns=None,
+                 keystroke_title_patterns=None, keystroke_url_patterns=None):
         self.title_patterns = [p.lower() for p in (title_patterns or []) if p]
         self.url_patterns = [p.lower() for p in (url_patterns or []) if p]
+        self.keystroke_title_patterns = [p.lower() for p in (keystroke_title_patterns or []) if p]
+        self.keystroke_url_patterns = [p.lower() for p in (keystroke_url_patterns or []) if p]
 
     @classmethod
     def from_config(cls, config):
         """Build from a loaded config dict, merged with the built-in defaults."""
         block = (config or {}).get("privacy_exclusions", {}) or {}
-        titles = list(_DEFAULT_TITLE_PATTERNS) + list(block.get("title_patterns", []))
-        urls = list(_DEFAULT_URL_PATTERNS) + list(block.get("url_patterns", []))
-        return cls(titles, urls)
-
-    def match_title(self, title):
-        t = (title or "").lower()
-        return any(p in t for p in self.title_patterns)
-
-    def match_url(self, url):
-        u = (url or "").lower()
-        return any(p in u for p in self.url_patterns)
+        return cls(
+            title_patterns=_DEFAULT_TITLE_PATTERNS + list(block.get("title_patterns", [])),
+            url_patterns=_DEFAULT_URL_PATTERNS + list(block.get("url_patterns", [])),
+            keystroke_title_patterns=(
+                _DEFAULT_KEYSTROKE_TITLE_PATTERNS + list(block.get("keystroke_title_patterns", []))
+            ),
+            keystroke_url_patterns=(
+                _DEFAULT_KEYSTROKE_URL_PATTERNS + list(block.get("keystroke_url_patterns", []))
+            ),
+        )
 
     def is_excluded(self, title="", url=""):
-        """True if this activity must not be recorded.
+        """True if this activity must not be recorded by any monitor at all.
 
-        A URL match or a window-title match is sufficient. Process name is
-        deliberately ignored so excluding a web app never silences its browser.
+        Used by the usage monitors (active window, mouse, browser tabs, ingest).
+        Process name is deliberately ignored so a web-app rule never silences
+        its browser.
         """
-        return self.match_url(url) or self.match_title(title)
+        return _match(self.url_patterns, url) or _match(self.title_patterns, title)
+
+    def exclude_keystrokes(self, title="", url=""):
+        """True if keystrokes typed here must not be captured.
+
+        Fully excluded targets qualify automatically; keystroke-only targets
+        (e.g. WhatsApp) qualify while their usage is still recorded elsewhere.
+        Used by the keyboard monitor.
+        """
+        if self.is_excluded(title=title, url=url):
+            return True
+        return (
+            _match(self.keystroke_url_patterns, url)
+            or _match(self.keystroke_title_patterns, title)
+        )
 
 
 # --- Shared singleton -------------------------------------------------------
