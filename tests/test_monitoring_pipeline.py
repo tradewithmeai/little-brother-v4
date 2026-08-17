@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -569,6 +570,110 @@ class TestActivityClassification(unittest.TestCase):
 
     def test_unknown_is_other(self):
         self.assertEqual(self.c.classify(url="https://some-random-site.example/"), OTHER)
+
+
+# ---------------------------------------------------------------------------
+# GitHub sync + correlation tests
+# ---------------------------------------------------------------------------
+
+from little_brother.analysis import github_sync
+
+
+class TestGitHubSyncAndCorrelate(unittest.TestCase):
+
+    def setUp(self):
+        # In-memory DB with the two tables the sync/correlate touch.
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.executescript(github_sync._SCHEMA)
+        self.conn.executescript("""
+            CREATE TABLE file_events (
+                id INTEGER PRIMARY KEY, timestamp TEXT, event_type TEXT,
+                src_path TEXT, is_directory INTEGER, source_tag TEXT,
+                workspace TEXT, file_class TEXT, file_size INTEGER
+            );
+        """)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _fake_client(self):
+        """A GitHubClient stub that serves canned API responses (no network)."""
+        client = MagicMock()
+        client.ok.return_value = True
+        client.viewer_login.return_value = "tester"
+        client.owned_repo_names.return_value = ["proj-a", "unrelated"]
+
+        def api(path, params=None, paginate=False):
+            if path == "repos/tester/proj-a/commits":
+                return [
+                    {"sha": "aaa", "html_url": "u/aaa",
+                     "commit": {"author": {"date": "2026-08-10T10:00:00Z"},
+                                "message": "first\n\nbody"}},
+                    {"sha": "bbb", "html_url": "u/bbb",
+                     "commit": {"author": {"date": "2026-08-11T10:00:00Z"},
+                                "message": "second"}},
+                ]
+            if path.startswith("repos/tester/proj-a/commits/"):
+                return {"stats": {"additions": 10, "deletions": 2},
+                        "files": [{"filename": "x.py"}]}
+            return []
+
+        client.api.side_effect = api
+        return client
+
+    def test_sync_stores_commits_for_matching_workspace(self):
+        # Local activity exists for proj-a, so it is the repo we sync.
+        self.conn.execute(
+            "INSERT INTO file_events (timestamp, workspace, file_class, source_tag) "
+            "VALUES ('2026-08-10T09:00:00', 'proj-a', 'source', 'human')"
+        )
+        self.conn.commit()
+
+        with patch.object(github_sync, "GitHubClient", return_value=self._fake_client()):
+            result = github_sync.sync(self.conn, config={}, since_days=365)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["new_commits"], 2)
+        row = self.conn.execute(
+            "SELECT additions, deletions, files_changed, workspace "
+            "FROM github_commits WHERE sha='aaa'"
+        ).fetchone()
+        self.assertEqual(row[0], 10)
+        self.assertEqual(row[1], 2)
+        self.assertEqual(row[2], 1)
+        self.assertEqual(row[3], "proj-a")
+
+    def test_sync_is_idempotent(self):
+        self.conn.execute(
+            "INSERT INTO file_events (timestamp, workspace, file_class, source_tag) "
+            "VALUES ('2026-08-10T09:00:00', 'proj-a', 'source', 'human')"
+        )
+        self.conn.commit()
+        with patch.object(github_sync, "GitHubClient", return_value=self._fake_client()):
+            github_sync.sync(self.conn, config={}, since_days=365)
+            second = github_sync.sync(self.conn, config={}, since_days=365)
+        self.assertEqual(second["new_commits"], 0)
+        count = self.conn.execute("SELECT COUNT(*) FROM github_commits").fetchone()[0]
+        self.assertEqual(count, 2)
+
+    def test_correlate_joins_commits_and_local_edits(self):
+        self.conn.execute(
+            "INSERT INTO github_commits (sha, repo, workspace, committed_at, additions, deletions) "
+            "VALUES ('c1', 'proj-a', 'proj-a', ?, 100, 20)",
+            ((datetime.utcnow()).isoformat() + "Z",),
+        )
+        for _ in range(3):
+            self.conn.execute(
+                "INSERT INTO file_events (timestamp, workspace, file_class, source_tag) "
+                "VALUES (?, 'proj-a', 'source', 'human')",
+                (datetime.utcnow().isoformat(),),
+            )
+        self.conn.commit()
+        rows = github_sync.correlate(self.conn, since_days=30)
+        proj = next(r for r in rows if r["workspace"] == "proj-a")
+        self.assertEqual(proj["commits"], 1)
+        self.assertEqual(proj["additions"], 100)
+        self.assertEqual(proj["local_source_edits"], 3)
 
 
 if __name__ == "__main__":

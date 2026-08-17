@@ -43,3 +43,18 @@ CREATE TABLE IF NOT EXISTS key_events (
     key_count INTEGER,
     suppressed INTEGER DEFAULT 0
 );
+
+-- Commits pulled from GitHub, correlated to local activity by workspace + time.
+CREATE TABLE IF NOT EXISTS github_commits (
+    sha TEXT PRIMARY KEY,
+    repo TEXT NOT NULL,
+    workspace TEXT,
+    committed_at TEXT NOT NULL,
+    author TEXT,
+    message TEXT,
+    additions INTEGER,
+    deletions INTEGER,
+    files_changed INTEGER,
+    url TEXT,
+    synced_at TEXT
+);

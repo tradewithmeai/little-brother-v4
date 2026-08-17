@@ -165,6 +165,8 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_browser_tab_fg        ON browser_tab_events(is_foreground, timestamp);
             CREATE INDEX IF NOT EXISTS idx_file_events_class_ts  ON file_events(file_class, timestamp);
             CREATE INDEX IF NOT EXISTS idx_file_events_source_ts ON file_events(source_tag, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_github_commits_ws_ts  ON github_commits(workspace, committed_at);
+            CREATE INDEX IF NOT EXISTS idx_github_commits_ts     ON github_commits(committed_at);
         """)
 
         tables = {

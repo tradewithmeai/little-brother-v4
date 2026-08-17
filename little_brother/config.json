@@ -21,6 +21,12 @@
     "ambient_title_patterns": [],
     "rules": []
   },
+  "github": {
+    "username": null,
+    "token": null,
+    "repos": null,
+    "sync_days": 90
+  },
   "api_key": "ecffce0a195432624cb8a47d0753507e5b9c1ba14006f35bcc562ebb7967a472",
   "webhooks": [],
   "watchdog": {

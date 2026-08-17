@@ -444,6 +444,46 @@ def create_api_blueprint(orchestrator, event_bus):
             conn.close()
 
     # ------------------------------------------------------------------
+    # GitHub — commits shipped, correlated to local activity per project
+    # ------------------------------------------------------------------
+
+    @api.route("/api/v1/github")
+    @require_api_key
+    def api_github():
+        days = int(request.args.get("days", 30))
+        conn = get_db()
+        try:
+            # Table may not exist yet on a DB that has never synced.
+            has_table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='github_commits'"
+            ).fetchone()
+            if not has_table:
+                return jsonify({
+                    "synced": False,
+                    "hint": "run: python -m little_brother.analysis.github_sync",
+                    "by_project": [],
+                })
+
+            totals = conn.execute(
+                "SELECT COUNT(*) as commits, MAX(synced_at) as last_sync, "
+                "MAX(committed_at) as last_commit FROM github_commits"
+            ).fetchone()
+
+            from ..analysis.github_sync import correlate
+            rows = correlate(conn, since_days=days)
+
+            return jsonify({
+                "synced": (totals["commits"] or 0) > 0,
+                "total_commits": totals["commits"] or 0,
+                "last_sync": totals["last_sync"],
+                "last_commit": totals["last_commit"],
+                "period_days": days,
+                "by_project": rows,
+            })
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
     # Digest — single-call activity snapshot for agent consumption
     # ------------------------------------------------------------------
 
