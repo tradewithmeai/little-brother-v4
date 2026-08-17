@@ -5,6 +5,8 @@ import time
 import urllib.request
 import urllib.error
 
+from .exclusions import get_exclusions
+
 
 class BrowserTabMonitor:
     """Monitor browser tabs via Chrome DevTools Protocol HTTP endpoint.
@@ -67,14 +69,18 @@ class BrowserTabMonitor:
             self._connected = True
 
         current_tabs = {}
+        exclusions = get_exclusions()
         for entry in data:
             if entry.get("type") != "page":
                 continue
+            title = entry.get("title", "")
+            url = entry.get("url", "")
+            # Privacy exclusion: excluded tabs are invisible — never tracked,
+            # so no created/updated/dwell/removed events are ever emitted.
+            if exclusions.is_excluded(title=title, url=url):
+                continue
             tab_id = entry.get("id", "")
-            current_tabs[tab_id] = {
-                "title": entry.get("title", ""),
-                "url": entry.get("url", ""),
-            }
+            current_tabs[tab_id] = {"title": title, "url": url}
 
         timestamp = datetime.datetime.utcnow().isoformat()
         now = time.monotonic()

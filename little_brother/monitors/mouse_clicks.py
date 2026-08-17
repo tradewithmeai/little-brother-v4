@@ -2,6 +2,8 @@ import ctypes
 import ctypes.wintypes
 import datetime
 
+from .exclusions import get_exclusions
+
 _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -46,6 +48,11 @@ class MouseClickMonitor:
         try:
             button_name = getattr(button, "name", str(button))
             window_title, process_name = self._get_foreground_info()
+
+            # Privacy exclusion: drop clicks in excluded windows entirely.
+            if get_exclusions().is_excluded(title=window_title):
+                return
+
             timestamp = datetime.datetime.utcnow().isoformat()
 
             self.db.log_mouse_click(

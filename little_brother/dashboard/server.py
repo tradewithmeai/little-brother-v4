@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, send_from_directory
 from werkzeug.serving import make_server
 
+from ..monitors.exclusions import get_exclusions
+
 # Write connection for ingesting extension events (separate from the read-only get_db())
 _WRITE_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "little_brother.db")
 _write_lock = threading.Lock()
@@ -78,6 +80,10 @@ def api_browser_tab_ingest():
 
     if not event_type:
         return jsonify({"error": "event_type required"}), 400
+
+    # Privacy exclusion: silently accept but never store excluded tabs.
+    if get_exclusions().is_excluded(title=title, url=url):
+        return jsonify({"ok": True, "excluded": True}), 202
 
     raw_duration = data.get("duration_ms")
     try:

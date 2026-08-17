@@ -436,5 +436,74 @@ class TestFirefoxDwellHTTPPath(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
 
 
+# ---------------------------------------------------------------------------
+# Privacy exclusion tests
+# ---------------------------------------------------------------------------
+
+from little_brother.monitors.exclusions import PrivacyExclusions
+
+
+class TestPrivacyExclusions(unittest.TestCase):
+
+    def test_default_whatsapp_title_excluded(self):
+        ex = PrivacyExclusions.from_config({})
+        self.assertTrue(ex.is_excluded(title="(3) WhatsApp - Mozilla Firefox"))
+        self.assertTrue(ex.is_excluded(title="WhatsApp"))
+
+    def test_default_whatsapp_url_excluded(self):
+        ex = PrivacyExclusions.from_config({})
+        self.assertTrue(ex.is_excluded(url="https://web.whatsapp.com/"))
+        self.assertTrue(ex.is_excluded(title="New Tab", url="https://web.whatsapp.com/send?phone=1"))
+
+    def test_non_excluded_pass_through(self):
+        ex = PrivacyExclusions.from_config({})
+        self.assertFalse(ex.is_excluded(title="WindowsTerminal"))
+        self.assertFalse(ex.is_excluded(title="claude.ai", url="https://claude.ai/"))
+        self.assertFalse(ex.is_excluded(title="Amazon", url="https://www.amazon.co.uk/"))
+
+    def test_process_name_never_triggers_exclusion(self):
+        # Excluding a web app must not silence its whole browser.
+        ex = PrivacyExclusions.from_config({})
+        self.assertFalse(ex.is_excluded(title="GitHub - Mozilla Firefox", url="https://github.com/"))
+
+    def test_config_extends_defaults(self):
+        ex = PrivacyExclusions.from_config(
+            {"privacy_exclusions": {"title_patterns": ["signal"], "url_patterns": ["telegram.org"]}}
+        )
+        # Custom rules apply...
+        self.assertTrue(ex.is_excluded(title="Signal"))
+        self.assertTrue(ex.is_excluded(url="https://web.telegram.org/"))
+        # ...and built-in defaults still apply.
+        self.assertTrue(ex.is_excluded(title="WhatsApp"))
+
+    def test_case_insensitive(self):
+        ex = PrivacyExclusions.from_config({})
+        self.assertTrue(ex.is_excluded(title="WHATSAPP"))
+        self.assertTrue(ex.is_excluded(url="https://WEB.WHATSAPP.COM/"))
+
+
+class TestIngestExclusion(unittest.TestCase):
+    """The Firefox extension ingest endpoint drops excluded tabs."""
+
+    def setUp(self):
+        from little_brother.dashboard import server as srv
+        self._srv = srv
+        srv.app.config["TESTING"] = True
+        self._client = srv.app.test_client()
+
+    def test_whatsapp_ingest_not_stored(self):
+        with patch.object(self._srv, "_write_db") as mock_wdb:
+            resp = self._client.post(
+                "/api/browser-tab",
+                json={"event_type": "created", "title": "WhatsApp",
+                      "url": "https://web.whatsapp.com/", "tab_id": "wa-test"},
+                environ_base={"REMOTE_ADDR": "127.0.0.1"},
+            )
+            self.assertEqual(resp.status_code, 202)
+            self.assertTrue(resp.get_json().get("excluded"))
+            # No DB write connection should ever be opened for an excluded tab.
+            mock_wdb.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

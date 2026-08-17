@@ -4,6 +4,8 @@ import datetime
 import threading
 import time
 
+from .exclusions import get_exclusions
+
 # Processes and window title fragments that indicate credential entry.
 # When matched, the keystroke buffer is suppressed (stored as a placeholder).
 _SUPPRESSED_PROCESSES = {
@@ -236,6 +238,11 @@ class KeyboardMonitor:
                 window_title, process_name = captured_context
             else:
                 window_title, process_name = self._get_foreground_info()
+
+            # Privacy exclusion: drop entirely (no row, not even a placeholder).
+            if get_exclusions().is_excluded(title=window_title):
+                return
+
             suppressed = self._is_suppressed(window_title, process_name)
 
             self.db.log_key_event(

@@ -4,6 +4,8 @@ import threading
 import datetime
 import time
 
+from .exclusions import get_exclusions
+
 
 # Win32 API setup
 user32 = ctypes.windll.user32
@@ -84,6 +86,11 @@ class ActiveWindowMonitor:
             buf = ctypes.create_unicode_buffer(title_len + 1)
             GetWindowTextW(hwnd, buf, title_len + 1)
             title = buf.value or ""
+
+        # Privacy exclusion: never record excluded windows (drops both the
+        # switch event and its heartbeats).
+        if get_exclusions().is_excluded(title=title):
+            return
 
         now = time.monotonic()
 
