@@ -775,15 +775,38 @@ class TestSessionStitching(unittest.TestCase):
         self.assertIsNone(sess[0]["workspace"])
 
     def test_project_effort_rollup(self):
-        self._key("2026-08-10T10:00:00", 100)
+        # File touch precedes both bursts, so both attribute to proj-a.
+        self._file("2026-08-10T10:00:00", "proj-a")
+        self._key("2026-08-10T10:01:00", 100)
         self._key("2026-08-10T10:10:00", 200)
-        self._file("2026-08-10T10:05:00", "proj-a")
         self.conn.commit()
         rows = sessmod.project_effort(self.conn, since_days=3650)
         proj = next(r for r in rows if r["workspace"] == "proj-a")
         self.assertEqual(proj["keystrokes"], 300)
-        self.assertEqual(proj["sessions"], 1)
         self.assertGreaterEqual(proj["active_hours"], 0.0)
+
+    def test_per_run_split_before_first_file_touch_is_unattributed(self):
+        # Keystrokes before any file touch are unattributed; those after the
+        # touch go to the project — the session is split, not back-credited.
+        self._key("2026-08-10T10:00:00", 100)
+        self._file("2026-08-10T10:05:00", "proj-a")
+        self._key("2026-08-10T10:10:00", 200)
+        self.conn.commit()
+        rows = {r["workspace"]: r for r in sessmod.project_effort(self.conn, since_days=3650)}
+        self.assertEqual(rows["proj-a"]["keystrokes"], 200)
+        self.assertEqual(rows[None]["keystrokes"], 100)
+
+    def test_alias_and_denylist(self):
+        from little_brother.analysis.workspaces import Workspaces
+        w = Workspaces(aliases={"mygov-hackathon": "mygov"}, denylist=["desktop.ini"])
+        self.assertEqual(w.canonical("mygov-hackathon"), "mygov")
+        self.assertFalse(w.is_real("desktop.ini"))
+        self.assertFalse(w.is_real("notes.py"))          # loose file
+        self.assertFalse(w.is_real("README.md"))
+        self.assertTrue(w.is_real("project-bright"))
+        self.assertTrue(w.is_real("localtaxpro.co.uk"))  # real folder with dots
+        self.assertIsNone(w.normalize("desktop.ini"))
+        self.assertEqual(w.normalize("mygov-hackathon"), "mygov")
 
 
 if __name__ == "__main__":

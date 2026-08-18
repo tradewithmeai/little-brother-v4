@@ -27,6 +27,12 @@
     "repos": null,
     "sync_days": 90
   },
+  "workspaces": {
+    "aliases": {
+      "mygov-hackathon": "mygov"
+    },
+    "denylist": ["desktop.ini", "thumbs.db"]
+  },
   "api_key": "ecffce0a195432624cb8a47d0753507e5b9c1ba14006f35bcc562ebb7967a472",
   "webhooks": [],
   "watchdog": {

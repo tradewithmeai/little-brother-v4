@@ -445,6 +445,38 @@ tr:hover td { background: var(--bg-hover); }
 }
 .hm-stat span { color: var(--green); }
 
+/* ── Projects billing view ── */
+.pv-summary {
+  display: flex; gap: 18px; flex-wrap: wrap;
+  font-size: 11px; color: var(--text-dim); letter-spacing: 1px;
+  margin-bottom: 12px;
+}
+.pv-summary b { color: var(--green); font-weight: 600; }
+.pv-scroll { overflow-x: auto; }
+table.pv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.pv-table th {
+  text-align: right; padding: 6px 10px; white-space: nowrap;
+  font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--text-dim); border-bottom: 1px solid var(--border-hi);
+}
+.pv-table th.pv-l, .pv-table td.pv-l { text-align: left; }
+.pv-table td {
+  padding: 6px 10px; text-align: right; white-space: nowrap;
+  border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums;
+}
+.pv-table tr:hover td { background: var(--panel-hi, rgba(0,230,118,0.04)); }
+.pv-proj { color: var(--text); font-weight: 600; }
+.pv-hours { color: var(--green); font-weight: 600; }
+.pv-commits { color: var(--blue); }
+.pv-add { color: var(--green); }
+.pv-del { color: var(--red); }
+.pv-dim { color: var(--text-dim); }
+.pv-bar {
+  height: 4px; background: var(--green); border-radius: 2px;
+  margin-top: 3px; min-width: 2px;
+}
+.pv-nogh { color: var(--amber); font-size: 10px; }
+
 /* ── Scrollbar global ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
@@ -640,6 +672,40 @@ tr:hover td { background: var(--bg-hover); }
       <span>PEAK</span>
     </div>
     <div class="hm-stats" id="hm-stats"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Project Effort &amp; Output</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="panel-badge" id="pv-badge">—</span>
+        <select class="ctrl" id="pv-days" onchange="refreshProjects()" title="Window">
+          <option value="7">7 DAYS</option>
+          <option value="14">14 DAYS</option>
+          <option value="30" selected>30 DAYS</option>
+          <option value="90">90 DAYS</option>
+          <option value="120">120 DAYS</option>
+        </select>
+      </div>
+    </div>
+    <div class="pv-summary" id="pv-summary"></div>
+    <div class="pv-scroll">
+      <table class="pv-table">
+        <thead>
+          <tr>
+            <th class="pv-l">Project</th>
+            <th>Active hrs</th>
+            <th>Keystrokes</th>
+            <th>Sessions</th>
+            <th>Commits</th>
+            <th>+ Added</th>
+            <th>− Deleted</th>
+            <th class="pv-l">Last active</th>
+          </tr>
+        </thead>
+        <tbody id="pv-body"></tbody>
+      </table>
+    </div>
   </div>
 
 </div><!-- /container -->
@@ -1196,9 +1262,75 @@ function hmAutoTz() {
   if (best) best.selected = true;
 }
 
+// ── Project effort & output ───────────────────────────────────────────────────
+
+function pvFmtHours(h) {
+  h = h || 0;
+  if (h < 1) return Math.round(h * 60) + 'm';
+  return h.toFixed(1) + 'h';
+}
+function pvFmtDate(ts) {
+  if (!ts) return '—';
+  const d = new Date(String(ts).slice(0, 19) + 'Z');
+  if (isNaN(d)) return '—';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+async function refreshProjects() {
+  const days = document.getElementById('pv-days').value;
+  let data;
+  try {
+    data = await api(`/api/projects?days=${days}`);
+  } catch(e) { console.error('projects', e); return; }
+
+  const projects = data.projects || [];
+  const maxHours = projects.reduce((m, p) => Math.max(m, p.active_hours || 0), 0) || 1;
+
+  // Summary line
+  const totalHours = projects.reduce((s, p) => s + (p.active_hours || 0), 0);
+  const totalCommits = projects.reduce((s, p) => s + (p.commits || 0), 0);
+  const u = data.unattributed || {};
+  document.getElementById('pv-summary').innerHTML =
+    `<span>ATTRIBUTED <b>${pvFmtHours(totalHours)}</b> across <b>${projects.length}</b> projects</span>` +
+    `<span>SHIPPED <b>${num(totalCommits)}</b> commits</span>` +
+    `<span>UNATTRIBUTED <b>${pvFmtHours(u.active_hours)}</b> (browsing / comms / media)</span>` +
+    (data.github_synced ? '' : `<span class="pv-nogh">GitHub not synced — run: python -m little_brother.analysis.github_sync</span>`);
+
+  document.getElementById('pv-badge').textContent = `${projects.length} projects · ${days}d`;
+
+  const body = document.getElementById('pv-body');
+  if (!projects.length) {
+    body.innerHTML = `<tr><td colspan="8" class="pv-l pv-dim">No attributed project activity in this window.</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = projects.map(p => {
+    const barW = Math.max(2, Math.round(100 * (p.active_hours || 0) / maxHours));
+    const commits = p.commits
+      ? `<span class="pv-commits">${num(p.commits)}</span>`
+      : `<span class="pv-dim">—</span>`;
+    const add = p.additions ? `<span class="pv-add">+${num(p.additions)}</span>` : `<span class="pv-dim">—</span>`;
+    const del = p.deletions ? `<span class="pv-del">−${num(p.deletions)}</span>` : `<span class="pv-dim">—</span>`;
+    return `<tr>
+      <td class="pv-l">
+        <div class="pv-proj">${esc(p.workspace)}</div>
+        <div class="pv-bar" style="width:${barW}%"></div>
+      </td>
+      <td class="pv-hours">${pvFmtHours(p.active_hours)}</td>
+      <td>${num(p.keystrokes)}</td>
+      <td>${num(p.sessions)}</td>
+      <td>${commits}</td>
+      <td>${add}</td>
+      <td>${del}</td>
+      <td class="pv-l pv-dim">${pvFmtDate(p.last_active)}</td>
+    </tr>`;
+  }).join('');
+}
+
 // Boot
 hmAutoTz();
 refreshHeatmap();
+refreshProjects();
 refresh();
 startTimer();
 </script>

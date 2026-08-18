@@ -187,13 +187,18 @@ def sync(conn, config=None, since_days=90, max_stat_fetch=150, repos=None):
     if not owner:
         return {"ok": False, "error": "could not resolve GitHub username"}
 
-    # Decide which repos to sync.
+    from .workspaces import get_workspaces
+    ws_tool = get_workspaces(config)
+
+    # Decide which repos to sync: repos whose canonical name matches a real
+    # local workspace (so aliased repos like mygov-hackathon -> mygov match).
     if repos is None:
         repos = gh_cfg.get("repos")
     if not repos:
-        workspaces = {w.lower(): w for w in _local_workspaces(conn)}
+        canon_ws = {ws_tool.canonical(w) for w in _local_workspaces(conn)
+                    if ws_tool.is_real(w)}
         owned = client.owned_repo_names()
-        repos = [name for name in owned if name.lower() in workspaces]
+        repos = [name for name in owned if ws_tool.canonical(name) in canon_ws]
 
     since_iso = (datetime.utcnow() - timedelta(days=since_days)).isoformat() + "Z"
     author = gh_cfg.get("author", owner)
@@ -242,7 +247,7 @@ def sync(conn, config=None, since_days=90, max_stat_fetch=150, repos=None):
                 "(sha, repo, workspace, committed_at, author, message, "
                 " additions, deletions, files_changed, url, synced_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (sha, repo, repo, committed_at, author, message,
+                (sha, repo, ws_tool.canonical(repo), committed_at, author, message,
                  additions, deletions, files_changed, url, synced_at),
             )
             existing.add(sha)
@@ -311,7 +316,7 @@ def backfill_stats(conn, config=None, max_fetch=200):
     return {"ok": True, "filled": filled, "errors": errors, "remaining": remaining}
 
 
-def correlate(conn, since_days=30):
+def correlate(conn, since_days=30, config=None):
     """Join shipped commits against local file activity, per workspace.
 
     Commits carry a workspace (== repo name); file_events carry the same
@@ -322,37 +327,50 @@ def correlate(conn, since_days=30):
     Returns a list of per-workspace rows, most commits first.
     """
     since = (datetime.utcnow() - timedelta(days=since_days)).isoformat()
+    from .workspaces import get_workspaces
+    ws_tool = get_workspaces(config)
 
+    # Canonicalize + filter at read time so historical rows (stored under the
+    # raw repo name) and aliased workspaces collapse to the same key.
     commits = {}
     for r in conn.execute(
-        """SELECT workspace,
-                  COUNT(*)              AS commits,
-                  SUM(COALESCE(additions,0)) AS additions,
-                  SUM(COALESCE(deletions,0)) AS deletions,
-                  COUNT(DISTINCT substr(committed_at,1,10)) AS commit_days,
-                  MAX(committed_at)     AS last_commit
-           FROM github_commits
-           WHERE committed_at >= ?
-           GROUP BY workspace""",
+        """SELECT workspace, additions, deletions,
+                  substr(committed_at,1,10) AS day, committed_at
+           FROM github_commits WHERE committed_at >= ?""",
         (since,),
     ).fetchall():
-        commits[r[0]] = {
-            "commits": r[1], "additions": r[2] or 0, "deletions": r[3] or 0,
-            "commit_days": r[4], "last_commit": r[5],
-        }
+        ws = ws_tool.normalize(r[0])
+        if ws is None:
+            continue
+        c = commits.setdefault(ws, {"commits": 0, "additions": 0, "deletions": 0,
+                                    "_days": set(), "last_commit": None})
+        c["commits"] += 1
+        c["additions"] += r[1] or 0
+        c["deletions"] += r[2] or 0
+        c["_days"].add(r[3])
+        if c["last_commit"] is None or r[4] > c["last_commit"]:
+            c["last_commit"] = r[4]
+    for c in commits.values():
+        c["commit_days"] = len(c.pop("_days"))
 
     edits = {}
     for r in conn.execute(
-        """SELECT workspace,
-                  COUNT(*) AS source_edits,
-                  COUNT(DISTINCT substr(timestamp,1,10)) AS active_days,
-                  MAX(timestamp) AS last_edit
+        """SELECT workspace, timestamp, substr(timestamp,1,10) AS day
            FROM file_events
            WHERE timestamp >= ? AND file_class = 'source' AND source_tag = 'human'
-           GROUP BY workspace""",
+             AND workspace IS NOT NULL""",
         (since,),
     ).fetchall():
-        edits[r[0]] = {"source_edits": r[1], "active_days": r[2], "last_edit": r[3]}
+        ws = ws_tool.normalize(r[0])
+        if ws is None:
+            continue
+        e = edits.setdefault(ws, {"source_edits": 0, "_days": set(), "last_edit": None})
+        e["source_edits"] += 1
+        e["_days"].add(r[2])
+        if e["last_edit"] is None or r[1] > e["last_edit"]:
+            e["last_edit"] = r[1]
+    for e in edits.values():
+        e["active_days"] = len(e.pop("_days"))
 
     rows = []
     for ws in set(commits) | set(edits):

@@ -577,6 +577,60 @@ def api_heatmap():
         conn.close()
 
 
+@app.route("/api/projects")
+def api_projects_view():
+    """Per-project billing view: effort (from sessions) + shipped (commits)."""
+    days = max(1, min(365, int(request.args.get("days", 30))))
+    gap = max(1, min(120, int(request.args.get("gap_minutes", 15))))
+    conn = get_db()
+    try:
+        from ..analysis.sessions import project_effort
+        effort = {r["workspace"]: r for r in project_effort(conn, since_days=days, gap_minutes=gap)}
+
+        commits = {}
+        has_gh = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='github_commits'"
+        ).fetchone()
+        if has_gh:
+            from ..analysis.github_sync import correlate
+            commits = {r["workspace"]: r for r in correlate(conn, since_days=days)}
+
+        projects = []
+        for ws in set(effort) | set(commits):
+            if ws is None:
+                continue
+            e = effort.get(ws, {})
+            c = commits.get(ws, {})
+            projects.append({
+                "workspace": ws,
+                "active_hours": e.get("active_hours", 0.0),
+                "keystrokes": e.get("keystrokes", 0),
+                "clicks": e.get("clicks", 0),
+                "sessions": e.get("sessions", 0),
+                "commits": c.get("commits", 0),
+                "additions": c.get("additions", 0),
+                "deletions": c.get("deletions", 0),
+                "source_edits": c.get("local_source_edits", 0),
+                "last_active": e.get("last_active") or c.get("last_local_edit"),
+            })
+        projects.sort(key=lambda p: p["active_hours"], reverse=True)
+
+        unattributed = effort.get(None, {})
+        return jsonify({
+            "period_days": days,
+            "gap_minutes": gap,
+            "github_synced": bool(commits),
+            "projects": projects,
+            "unattributed": {
+                "active_hours": unattributed.get("active_hours", 0.0),
+                "keystrokes": unattributed.get("keystrokes", 0),
+                "sessions": unattributed.get("sessions", 0),
+            },
+        })
+    finally:
+        conn.close()
+
+
 # --- Server wrapper ---
 
 class DashboardServer:
