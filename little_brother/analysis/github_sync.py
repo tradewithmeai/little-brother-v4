@@ -262,6 +262,55 @@ def sync(conn, config=None, since_days=90, max_stat_fetch=150, repos=None):
     }
 
 
+def backfill_stats(conn, config=None, max_fetch=200):
+    """Fill in additions/deletions/files_changed for commits still missing them.
+
+    The sync caps per-run stat lookups to protect the rate limit, so commits
+    synced beyond that cap land with NULL stats. This walks those rows and
+    fetches their stats, up to ``max_fetch`` per run — call it repeatedly (or
+    schedule it) until ``remaining`` reaches zero.
+
+    Returns a summary dict.
+    """
+    config = config if config is not None else _config()
+    gh_cfg = config.get("github", {}) or {}
+    client = GitHubClient(config)
+    if not client.ok():
+        return {"ok": False, "error": "no GitHub auth (install/login gh, or set github.token)"}
+
+    owner = gh_cfg.get("username") or client.viewer_login()
+    if not owner:
+        return {"ok": False, "error": "could not resolve GitHub username"}
+
+    pending = conn.execute(
+        "SELECT sha, repo FROM github_commits "
+        "WHERE additions IS NULL ORDER BY committed_at DESC LIMIT ?",
+        (max_fetch,),
+    ).fetchall()
+
+    filled = 0
+    errors = 0
+    for sha, repo in pending:
+        detail = client.api(f"repos/{owner}/{repo}/commits/{sha}")
+        if not isinstance(detail, dict) or "stats" not in detail:
+            errors += 1
+            continue
+        st = detail.get("stats", {}) or {}
+        files = detail.get("files")
+        conn.execute(
+            "UPDATE github_commits SET additions=?, deletions=?, files_changed=? WHERE sha=?",
+            (st.get("additions"), st.get("deletions"),
+             len(files) if isinstance(files, list) else None, sha),
+        )
+        filled += 1
+    conn.commit()
+
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM github_commits WHERE additions IS NULL"
+    ).fetchone()[0]
+    return {"ok": True, "filled": filled, "errors": errors, "remaining": remaining}
+
+
 def correlate(conn, since_days=30):
     """Join shipped commits against local file activity, per workspace.
 
@@ -324,12 +373,40 @@ def correlate(conn, since_days=30):
     return rows
 
 
-def _main():
+def _main(argv=None):
+    """CLI:  sync (default) | backfill [--all] | backfill-loop
+
+    sync           pull new commits (stats capped per run)
+    backfill       fill stats for up to 200 stat-less commits, once
+    backfill --all keep backfilling until none remain (respects rate limit)
+    """
     import sqlite3
+    argv = argv if argv is not None else sys.argv[1:]
+    cmd = argv[0] if argv else "sync"
     db_path = os.path.join(os.path.dirname(__file__), "..", "..", "little_brother.db")
     conn = sqlite3.connect(os.path.abspath(db_path), timeout=10)
     try:
-        result = sync(conn)
+        _ensure_schema(conn)
+        if cmd == "sync":
+            result = sync(conn)
+        elif cmd == "backfill":
+            if "--all" in argv:
+                total_filled = 0
+                while True:
+                    result = backfill_stats(conn)
+                    if not result.get("ok"):
+                        break
+                    total_filled += result["filled"]
+                    print(json.dumps(result))
+                    if result["filled"] == 0 or result["remaining"] == 0:
+                        break
+                result = {"ok": result.get("ok", False),
+                          "total_filled": total_filled,
+                          "remaining": result.get("remaining")}
+            else:
+                result = backfill_stats(conn)
+        else:
+            result = {"ok": False, "error": f"unknown command: {cmd}"}
     finally:
         conn.close()
     print(json.dumps(result, indent=2))

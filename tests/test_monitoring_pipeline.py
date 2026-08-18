@@ -656,6 +656,32 @@ class TestGitHubSyncAndCorrelate(unittest.TestCase):
         count = self.conn.execute("SELECT COUNT(*) FROM github_commits").fetchone()[0]
         self.assertEqual(count, 2)
 
+    def test_backfill_fills_missing_stats(self):
+        # Two commits with NULL stats.
+        for sha in ("s1", "s2"):
+            self.conn.execute(
+                "INSERT INTO github_commits (sha, repo, workspace, committed_at) "
+                "VALUES (?, 'proj-a', 'proj-a', '2026-08-10T10:00:00Z')", (sha,),
+            )
+        self.conn.commit()
+
+        client = MagicMock()
+        client.ok.return_value = True
+        client.viewer_login.return_value = "tester"
+        client.api.return_value = {"stats": {"additions": 7, "deletions": 3},
+                                   "files": [{"filename": "a"}, {"filename": "b"}]}
+
+        with patch.object(github_sync, "GitHubClient", return_value=client):
+            result = github_sync.backfill_stats(self.conn, config={}, max_fetch=10)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["filled"], 2)
+        self.assertEqual(result["remaining"], 0)
+        row = self.conn.execute(
+            "SELECT additions, deletions, files_changed FROM github_commits WHERE sha='s1'"
+        ).fetchone()
+        self.assertEqual(tuple(row), (7, 3, 2))
+
     def test_correlate_joins_commits_and_local_edits(self):
         self.conn.execute(
             "INSERT INTO github_commits (sha, repo, workspace, committed_at, additions, deletions) "
