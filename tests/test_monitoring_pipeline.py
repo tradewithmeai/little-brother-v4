@@ -702,5 +702,89 @@ class TestGitHubSyncAndCorrelate(unittest.TestCase):
         self.assertEqual(proj["local_source_edits"], 3)
 
 
+# ---------------------------------------------------------------------------
+# Session stitching tests
+# ---------------------------------------------------------------------------
+
+from little_brother.analysis import sessions as sessmod
+
+
+class TestSessionStitching(unittest.TestCase):
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.executescript("""
+            CREATE TABLE key_events (id INTEGER PRIMARY KEY, timestamp TEXT, key_count INTEGER);
+            CREATE TABLE active_window_events (id INTEGER PRIMARY KEY, timestamp TEXT, is_heartbeat INTEGER);
+            CREATE TABLE mouse_click_events (id INTEGER PRIMARY KEY, timestamp TEXT);
+            CREATE TABLE file_events (id INTEGER PRIMARY KEY, timestamp TEXT, workspace TEXT,
+                                      source_tag TEXT, file_class TEXT);
+        """)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _key(self, ts, n):
+        self.conn.execute("INSERT INTO key_events (timestamp, key_count) VALUES (?, ?)", (ts, n))
+
+    def _file(self, ts, ws):
+        self.conn.execute(
+            "INSERT INTO file_events (timestamp, workspace, source_tag, file_class) "
+            "VALUES (?, ?, 'human', 'source')", (ts, ws))
+
+    def test_gap_splits_sessions(self):
+        # Two keystroke bursts 30 min apart -> two sessions (gap > 15 min).
+        self._key("2026-08-10T10:00:00", 100)
+        self._key("2026-08-10T10:05:00", 50)
+        self._key("2026-08-10T10:35:00", 80)
+        self.conn.commit()
+        sess = sessmod.build_sessions(self.conn, since_days=3650, gap_minutes=15)
+        self.assertEqual(len(sess), 2)
+        self.assertEqual(sess[0]["keystrokes"], 150)
+        self.assertEqual(sess[1]["keystrokes"], 80)
+
+    def test_heartbeats_do_not_bridge_idle(self):
+        # Activity, then only heartbeats for hours, then activity again.
+        # Heartbeats must NOT keep one giant session alive.
+        self._key("2026-08-10T10:00:00", 100)
+        for h in range(11, 20):  # hourly heartbeats, no real activity
+            self.conn.execute(
+                "INSERT INTO active_window_events (timestamp, is_heartbeat) VALUES (?, 1)",
+                (f"2026-08-10T{h}:00:00",))
+        self._key("2026-08-10T20:00:00", 100)
+        self.conn.commit()
+        sess = sessmod.build_sessions(self.conn, since_days=3650, gap_minutes=15)
+        self.assertEqual(len(sess), 2)  # not one 10-hour session
+
+    def test_dominant_workspace_attribution(self):
+        # One session touching proj-a twice and proj-b once -> attributed to a.
+        self._key("2026-08-10T10:00:00", 100)
+        self._key("2026-08-10T10:10:00", 100)
+        self._file("2026-08-10T10:01:00", "proj-a")
+        self._file("2026-08-10T10:02:00", "proj-a")
+        self._file("2026-08-10T10:03:00", "proj-b")
+        self.conn.commit()
+        sess = sessmod.build_sessions(self.conn, since_days=3650, gap_minutes=15)
+        self.assertEqual(len(sess), 1)
+        self.assertEqual(sess[0]["workspace"], "proj-a")
+
+    def test_no_file_activity_is_unattributed(self):
+        self._key("2026-08-10T10:00:00", 100)
+        self.conn.commit()
+        sess = sessmod.build_sessions(self.conn, since_days=3650, gap_minutes=15)
+        self.assertIsNone(sess[0]["workspace"])
+
+    def test_project_effort_rollup(self):
+        self._key("2026-08-10T10:00:00", 100)
+        self._key("2026-08-10T10:10:00", 200)
+        self._file("2026-08-10T10:05:00", "proj-a")
+        self.conn.commit()
+        rows = sessmod.project_effort(self.conn, since_days=3650)
+        proj = next(r for r in rows if r["workspace"] == "proj-a")
+        self.assertEqual(proj["keystrokes"], 300)
+        self.assertEqual(proj["sessions"], 1)
+        self.assertGreaterEqual(proj["active_hours"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

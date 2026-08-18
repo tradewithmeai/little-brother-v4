@@ -484,6 +484,85 @@ def create_api_blueprint(orchestrator, event_bus):
             conn.close()
 
     # ------------------------------------------------------------------
+    # Sessions — reconstructed work sessions with per-project effort
+    # ------------------------------------------------------------------
+
+    @api.route("/api/v1/sessions")
+    @require_api_key
+    def api_sessions():
+        days = int(request.args.get("days", 14))
+        gap = int(request.args.get("gap_minutes", 15))
+        limit = int(request.args.get("limit", 100))
+        conn = get_db()
+        try:
+            from ..analysis.sessions import build_sessions
+            sessions = build_sessions(conn, since_days=days, gap_minutes=gap)
+            return jsonify({
+                "period_days": days,
+                "gap_minutes": gap,
+                "total_sessions": len(sessions),
+                "attributed_sessions": sum(1 for s in sessions if s["workspace"]),
+                "sessions": sessions[-limit:][::-1],  # most recent first
+            })
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Projects — billing view: effort (from sessions) + shipped (commits)
+    # ------------------------------------------------------------------
+
+    @api.route("/api/v1/projects")
+    @require_api_key
+    def api_projects():
+        days = int(request.args.get("days", 30))
+        gap = int(request.args.get("gap_minutes", 15))
+        conn = get_db()
+        try:
+            from ..analysis.sessions import project_effort
+            effort = {r["workspace"]: r for r in project_effort(conn, since_days=days, gap_minutes=gap)}
+
+            commits = {}
+            has_gh = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='github_commits'"
+            ).fetchone()
+            if has_gh:
+                from ..analysis.github_sync import correlate
+                commits = {r["workspace"]: r for r in correlate(conn, since_days=days)}
+
+            projects = []
+            for ws in set(effort) | set(commits):
+                if ws is None:
+                    continue  # unattributed time is not a project
+                e = effort.get(ws, {})
+                c = commits.get(ws, {})
+                projects.append({
+                    "workspace": ws,
+                    "active_hours": e.get("active_hours", 0.0),
+                    "keystrokes": e.get("keystrokes", 0),
+                    "clicks": e.get("clicks", 0),
+                    "sessions": e.get("sessions", 0),
+                    "commits": c.get("commits", 0),
+                    "additions": c.get("additions", 0),
+                    "deletions": c.get("deletions", 0),
+                    "source_edits": c.get("local_source_edits", 0),
+                    "last_active": e.get("last_active") or c.get("last_local_edit"),
+                })
+            projects.sort(key=lambda p: p["active_hours"], reverse=True)
+
+            unattributed = effort.get(None, {})
+            return jsonify({
+                "period_days": days,
+                "projects": projects,
+                "unattributed": {
+                    "active_hours": unattributed.get("active_hours", 0.0),
+                    "keystrokes": unattributed.get("keystrokes", 0),
+                    "sessions": unattributed.get("sessions", 0),
+                },
+            })
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
     # Digest — single-call activity snapshot for agent consumption
     # ------------------------------------------------------------------
 
